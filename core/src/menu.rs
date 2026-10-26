@@ -200,7 +200,7 @@ impl Hunt {
             let f = self.grab();
             let before = std::mem::take(&mut texts);
             texts = self.screen_texts(&f);
-            if !self.traits.phone && !reader::bag_still(&texts, &before) {
+            if !self.traits.phone && !reader::bag_still(&texts, &before, split) {
                 continue; // (still floating up)
             }
             if !tabbed {
