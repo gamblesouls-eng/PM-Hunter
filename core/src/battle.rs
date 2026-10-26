@@ -77,7 +77,8 @@ impl Hunt {
             self.nap(0.3)?;
             let f = self.grab();
             let texts = self.screen_texts(&f);
-            if !no_effect && texts.iter().any(|t| t.text.to_lowercase().contains("any effect")) {
+            let effect_message = texts.iter().any(|t| t.text.to_lowercase().contains("any effect"));
+            if !no_effect && effect_message {
                 no_effect = true;
                 self.trace("bag: item reported no effect; dismissing the message");
                 if let Some(c) = texts.iter().find(|t| t.is("close")) {
@@ -87,7 +88,9 @@ impl Hunt {
                 last = texts;
                 continue;
             }
-            if Self::party_prompt(&texts) {
+            // The effect message itself is an overlay even if OCR misses the party
+            // prompt behind it. Do not count that as a closed panel.
+            if Self::party_prompt(&texts) || effect_message {
                 gone = 0;
             } else {
                 gone += 1;
@@ -345,9 +348,11 @@ impl Hunt {
                                 // this exact party panel remains open and Close is visible.
                                 let f = self.grab();
                                 let current = self.screen_texts(&f);
-                                if Self::party_prompt(&current) {
+                                let effect_message = current.iter()
+                                    .any(|t| t.text.to_lowercase().contains("any effect"));
+                                if Self::party_prompt(&current) || effect_message {
                                     if let Some(c) = current.iter().find(|t| t.is("close")) {
-                                        self.trace("bag: target screen stayed open; closing its visible Close button");
+                                        self.trace("bag: party/effect panel stayed open; closing its visible Close button");
                                         self.click(c.pt())?;
                                         closed_with_close = true;
                                         let result = self.wait_party_closed(1.5, no_effect)?;
