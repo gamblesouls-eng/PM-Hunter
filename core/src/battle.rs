@@ -58,6 +58,48 @@ impl Hunt {
         Ok(())
     }
 
+    fn party_prompt(texts: &[TextHit]) -> bool {
+        texts.iter().any(|t| {
+            let l = t.text.to_lowercase();
+            l.starts_with("choose a pokemon")
+                || l.starts_with("select a pokemon")
+                || l.starts_with("pokemon party")
+        })
+    }
+
+    /// Wait for the selection panel to leave. A single OCR miss is not enough:
+    /// require two consecutive reads without the party prompt.
+    fn wait_party_closed(&mut self, seconds: f64, mut no_effect: bool) -> R<(bool, bool, Vec<TextHit>)> {
+        let end = now() + seconds;
+        let mut gone = 0;
+        let mut last = Vec::new();
+        while now() < end {
+            self.nap(0.3)?;
+            let f = self.grab();
+            let texts = self.screen_texts(&f);
+            if !no_effect && texts.iter().any(|t| t.text.to_lowercase().contains("any effect")) {
+                no_effect = true;
+                self.trace("bag: item reported no effect; dismissing the message");
+                if let Some(c) = texts.iter().find(|t| t.is("close")) {
+                    self.click(c.pt())?;
+                }
+                gone = 0;
+                last = texts;
+                continue;
+            }
+            if Self::party_prompt(&texts) {
+                gone = 0;
+            } else {
+                gone += 1;
+                if gone >= 2 {
+                    return Ok((true, no_effect, texts));
+                }
+            }
+            last = texts;
+        }
+        Ok((false, no_effect, last))
+    }
+
     /// Bag -> tab -> item -> Use, and -> party member when the item asks for
     /// one. Favorited items sit at the top of their tab; anything else is
     /// searched for (scrolled to on a phone that can't type). The name of
@@ -123,7 +165,7 @@ impl Hunt {
             }
             // the bag can close under it (a chat window, a stray tap): notice, reopen it once,
             // rather than look through a bag that isn't there
-            let bag_up = texts.iter().any(|t| t.is("backpack")) || find_tab(&texts, "Pokeballs", split, f.width()).is_some();
+            let bag_up = reader::bag_open(&texts, split);
             missing = if bag_up { 0 } else { missing + 1 };
             if (step == "tab" || step == "item") && missing >= 3 && now() - opened_at > 2.0 {
                 if reopened || !in_battle || !menu_ready(&f, lay) {
@@ -145,14 +187,14 @@ impl Hunt {
                 last_title = title;
                 !moved
             } else {
-                bag_still(&texts, &before)
+                bag_still(&texts, &before, split)
             };
             if step != "target" && !still {
                 continue;
             }
             if step == "tab" {
                 // the bag opens on the tab it was left on: the item in sight there, no click
-                if texts.iter().any(|t| norm(&t.text) == norm(&item) && t.x < split) {
+                if texts.iter().any(|t| same_word(&item, &t.text) && t.x < split) {
                     self.trace(&format!("bag: {item} is in sight already"));
                     (step, tab_at) = ("item", now()); // (and on with this read)
                 } else {
@@ -172,7 +214,7 @@ impl Hunt {
             }
             if step == "item" {
                 // exact names: "Dive Ball" and "Dream Ball" are one misread apart
-                let row = texts.iter().filter(|t| norm(&t.text) == norm(&item) && t.x < split)
+                let row = texts.iter().filter(|t| same_word(&item, &t.text) && t.x < split)
                     .min_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x))).cloned();
                 // (phones) a list still gliding from a swipe moves rows under the finger, and a tap
                 // only stops the glide: tapped once the row holds still
@@ -234,7 +276,7 @@ impl Hunt {
                         .map(|t| (t.text.clone(), t.y)).collect(),
                     None => Vec::new(),
                 };
-                if let Some(u) = use_at.filter(|_| named.iter().any(|(t, _)| norm(t) == norm(&item))) {
+                if let Some(u) = use_at.filter(|_| named.iter().any(|(t, _)| same_word(&item, t))) {
                     self.trace(&format!("bag: {item} is selected: Use"));
                     self.click(u)?;
                     self.move_mouse(lay.pt(layout::AFK_SPOT))?;
@@ -256,39 +298,92 @@ impl Hunt {
                     last_row_y = None;
                 }
             } else if step == "target" {
-                // in battle "Choose a Pokemon"; outside one the Pokemon Party screen, "Select a
-                // pokemon to heal with a Full Restore", its cards named "Clodsire - Lv. 109"
-                let party = texts.iter().any(|t| {
-                    let l = t.text.to_lowercase();
-                    l.starts_with("choose a pokemon") || l.starts_with("select a pokemon") || l.starts_with("pokemon party")
-                });
+                // In battle, verify that selecting the target actually leaves the
+                // party panel. Previously, timing out this wait still returned success,
+                // after which wait_turn could sit behind the panel for 60 seconds.
+                let party = Self::party_prompt(&texts);
                 let target = target.unwrap_or("");
                 if party {
                     if let Some(hit) = texts.iter().find(|t| reader::is_target(target, &t.text)).map(|t| t.pt()) {
                         self.trace(&format!("bag: {item} on {target}"));
                         self.click(hit)?;
                         if in_battle {
-                            // on a Pokemon that doesn't need it (its HP misread): "It won't have any
-                            // effect.", and the party screen stays: its Close, back to the battle
-                            let end = now() + 2.5;
-                            while now() < end {
-                                self.nap(0.3)?;
+                            self.move_mouse(lay.pt(layout::AFK_SPOT))?;
+                            let (mut closed, mut no_effect, mut last_texts) =
+                                self.wait_party_closed(2.5, false)?;
+
+                            // Retry the target click at most once, and only if a fresh
+                            // OCR read still shows the same prompt and same card in place.
+                            if !closed && !no_effect {
                                 let f = self.grab();
-                                let texts = self.screen_texts(&f);
-                                if texts.iter().any(|t| t.text.to_lowercase().contains("any effect")) {
-                                    self.trace(&format!("bag: the {item} won't have any effect: Close"));
-                                    if let Some(c) = texts.iter().find(|t| t.is("close")) {
-                                        self.click(c.pt())?;
+                                let current = self.screen_texts(&f);
+                                let target_hit = current.iter()
+                                    .find(|t| reader::is_target(target, &t.text));
+                                let same_card = target_hit.is_some_and(|t| {
+                                    (t.x - hit.x).abs() + (t.y - hit.y).abs() <= 24.0 * v
+                                });
+                                let effect = current.iter()
+                                    .any(|t| t.text.to_lowercase().contains("any effect"));
+                                if Self::party_prompt(&current) && same_card && !effect {
+                                    self.trace("bag: party prompt and target are unchanged; retrying that target once");
+                                    if let Some(t) = target_hit {
+                                        self.click(t.pt())?;
+                                        self.move_mouse(lay.pt(layout::AFK_SPOT))?;
                                     }
-                                    self.nap(0.8)?;
-                                    break;
-                                }
-                                if !texts.iter().any(|t| t.text.to_lowercase().starts_with("pokemon party")
-                                                     || t.text.to_lowercase().starts_with("choose a pokemon")) {
-                                    break; // the party screen's gone: it was used
+                                    let result = self.wait_party_closed(2.5, no_effect)?;
+                                    closed = result.0;
+                                    no_effect |= result.1;
+                                    last_texts = result.2;
+                                } else {
+                                    last_texts = current;
                                 }
                             }
+
+                            let mut closed_with_close = false;
+                            if !closed {
+                                // Close is clicked only if a fresh read confirms that
+                                // this exact party panel remains open and Close is visible.
+                                let f = self.grab();
+                                let current = self.screen_texts(&f);
+                                if Self::party_prompt(&current) {
+                                    if let Some(c) = current.iter().find(|t| t.is("close")) {
+                                        self.trace("bag: target screen stayed open; closing its visible Close button");
+                                        self.click(c.pt())?;
+                                        closed_with_close = true;
+                                        let result = self.wait_party_closed(1.5, no_effect)?;
+                                        closed = result.0;
+                                        no_effect |= result.1;
+                                        last_texts = result.2;
+                                    } else {
+                                        last_texts = current;
+                                    }
+                                } else {
+                                    let result = self.wait_party_closed(0.8, no_effect)?;
+                                    closed = result.0;
+                                    no_effect |= result.1;
+                                    last_texts = result.2;
+                                }
+                            }
+
+                            if closed {
+                                if closed_with_close && !no_effect {
+                                    self.trace("bag: target wasn't accepted; exited the party panel");
+                                    return Ok(None);
+                                }
+                                self.trace(&format!("bag: confirmed the party panel closed after {item}"));
+                                return Ok(Some(item));
+                            }
+
+                            let f = self.grab();
+                            let shot = self.snapshot(&f, "party-stuck");
+                            let read = last_texts.iter().map(|t| t.text.as_str())
+                                .collect::<Vec<_>>().join(", ");
+                            self.say(&format!("  (party panel stayed open after {item}: {shot}, text read: {})",
+                                              crate::util::clip(&read, 300)));
+                            return Ok(None);
                         }
+                        // Outside battle, the debug workflow performs its own
+                        // result read and returns to the bag.
                         return Ok(Some(item));
                     }
                 }

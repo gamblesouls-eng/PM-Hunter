@@ -328,14 +328,31 @@ pub fn search_box(texts: &[TextHit], split: f64, v: f64) -> Option<Pt> {
         .map(|t| t.pt())
 }
 
-/// The bag's stopped moving (it floats up as it opens): its "Backpack" title
-/// read in this read and the one before, in the same place.
-pub fn bag_still(texts: &[TextHit], before: &[TextHit]) -> bool {
+/// Whether the bag is present. Its title and active tab can both be missed by OCR;
+/// any recognized tab on the bag's left-hand column is evidence too.
+pub fn bag_open(texts: &[TextHit], split: f64) -> bool {
+    texts.iter().any(|t| norm(&t.text) == "backpack")
+        || texts.iter().any(|t| {
+            t.x < split && TABS.iter().any(|tab| same_word(tab, &t.text))
+        })
+}
+
+/// The bag's stopped moving as it opens. Prefer the Backpack title, but if OCR
+/// misses that title, track a tab label across consecutive frames instead.
+pub fn bag_still(texts: &[TextHit], before: &[TextHit], split: f64) -> bool {
     let title = |ts: &[TextHit]| ts.iter().find(|t| norm(&t.text) == "backpack").map(|t| (t.x, t.y));
-    match (title(texts), title(before)) {
-        (Some(a), Some(b)) => (a.0 - b.0).abs() + (a.1 - b.1).abs() <= 4.0,
-        _ => false,
+    if let (Some(a), Some(b)) = (title(texts), title(before)) {
+        return (a.0 - b.0).abs() + (a.1 - b.1).abs() <= 4.0;
     }
+
+    texts.iter()
+        .filter(|t| t.x < split && TABS.iter().any(|tab| same_word(tab, &t.text)))
+        .filter_map(|a| {
+            before.iter()
+                .find(|b| b.x < split && same_word(&a.text, &b.text))
+                .map(|b| (a.x - b.x).abs() + (a.y - b.y).abs())
+        })
+        .any(|distance| distance <= 4.0)
 }
 
 pub const MENU_ITEMS: [&str; 7] = ["Pokedex", "Party", "Bag", "PokeBoosters", "Save", "Trainer Card", "Codes"];
@@ -449,6 +466,32 @@ mod tests {
         let t = find_tab(&texts, "Pokeballs", 500.0, 2000).unwrap();
         assert_eq!((t.x.round(), t.y.round()), (101.0, 250.0));
         assert_eq!(find_tab(&texts, "Recovers", 500.0, 2000).unwrap().y, 200.0);
+    }
+
+    #[test]
+    fn fuzzy_item_names_tolerate_ocr_substitutions_without_merging_similar_balls() {
+        assert!(same_word("Full Restore", "Full Rest0re"));
+        assert!(same_word("Dive Ball", "Dive Bal1"));
+        assert!(!same_word("Dive Ball", "Dream Ball"));
+    }
+
+    #[test]
+    fn bag_detection_does_not_require_backpack_title_or_pokeballs_tab() {
+        let recovers = [hit("Recovers", 100.0, 200.0)];
+        assert!(bag_open(&recovers, 500.0));
+
+        let unrelated = [hit("Fight", 100.0, 200.0), hit("Run", 100.0, 300.0)];
+        assert!(!bag_open(&unrelated, 500.0));
+    }
+
+    #[test]
+    fn bag_still_tracks_tab_if_backpack_title_is_missed() {
+        let before = [hit("Recovers", 100.0, 200.0), hit("Key Items", 100.0, 300.0)];
+        let stable = [hit("Recovers", 100.0, 202.0), hit("Key Items", 100.0, 302.0)];
+        assert!(bag_still(&stable, &before, 500.0));
+
+        let moving = [hit("Recovers", 100.0, 220.0), hit("Key Items", 100.0, 320.0)];
+        assert!(!bag_still(&moving, &before, 500.0));
     }
 
     #[test]
