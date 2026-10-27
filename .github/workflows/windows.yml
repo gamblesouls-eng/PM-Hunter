@@ -15,7 +15,7 @@ on:
         description: "Build name, as the window shows it"
         default: "test"
   push:
-    branches: [main]
+    branches: [main, fix-stuck-bag-recovery]
     paths: ["core/**", "window/**", "Cargo.toml", "Cargo.lock", "samples/**", "config.example.json", "windows/**",
             ".github/workflows/windows.yml"]
 
