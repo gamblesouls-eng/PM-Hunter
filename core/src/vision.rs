@@ -136,6 +136,30 @@ pub fn chat_open(f: &Frame) -> Option<bool> {
     Some(px::count(f, b) > 0 && share(f, b, |c| lo(c) > 200) > 0.4)
 }
 
+/// The gradient's colored tab can be visible even when Windows OCR can't read its name.
+/// Compare the two sides of the tab's lower part (the actual swatch, below its gray margin):
+/// a plain box is gray on both sides; a gradient swatch has visibly different colors.
+pub fn gradient_visible(f: &Frame, lay: &Layout) -> bool {
+    let b = lay.boxed(layout::GRADIENT_TAB);
+    let (x0, y0, x1, y1) = px::clip(f, b);
+    let (w, h) = (x1 - x0, y1 - y0);
+    if w < 12 || h < 6 {
+        return false;
+    }
+    // The swatch sits in the lower part; exclude the outline and center divider too.
+    let top = y0 + h * 2 / 5;
+    let inset = (w / 10).max(1);
+    let seam = (w / 24).max(1);
+    let middle = x0 + w / 2;
+    let left = IBox::new((x0 + inset) as i32, top as i32, (middle - seam) as i32, y1 as i32);
+    let right = IBox::new((middle + seam) as i32, top as i32, (x1 - inset) as i32, y1 as i32);
+    let (Some(a), Some(b)) = (median(f, left, |_| true), median(f, right, |_| true)) else {
+        return false;
+    };
+    let difference: f64 = (0..3).map(|i| (a[i] - b[i]).abs()).sum();
+    difference >= 45.0
+}
+
 /// (shiny, tint, owned): the dark blue star, the yellow sparkle, and the little
 /// Poke Ball left of the HP bar (a species caught before).
 pub fn icons(f: &Frame, lay: &Layout) -> (bool, bool, bool) {
