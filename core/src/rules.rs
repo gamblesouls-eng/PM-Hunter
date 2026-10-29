@@ -209,6 +209,12 @@ pub fn field_ok(want: &Value, got: &Value) -> bool {
 
 pub type Rule = serde_json::Map<String, Value>;
 
+/// Auto-catch only when both indicators are present. The gradient may be visible
+/// as a colored chip even if OCR failed to read its label.
+pub fn has_reskin_gradient(enc: &Enc, gradient_visible: bool) -> bool {
+    !enc.reskin.trim().is_empty() && (!enc.gradient.trim().is_empty() || gradient_visible)
+}
+
 pub fn rule_ok(rule: &Rule, enc: &Enc) -> bool {
     rule.iter().all(|(k, v)| {
         if k == "not_species" { !field_ok(v, &enc.get("species")) } else { field_ok(v, &enc.get(k)) }
@@ -360,6 +366,25 @@ mod tests {
         assert!(field_ok(&json!("legendary"), &json!("Mewtwo")));
         assert!(!field_ok(&json!("legendary"), &json!("Pikachu")));
         assert!(field_ok(&json!(["Tympole", "Marill"]), &json!("Marill")));
+    }
+
+    #[test]
+    fn auto_catch_requires_reskin_and_gradient_together() {
+        let mut e = enc("Entei");
+        assert!(!has_reskin_gradient(&e, false), "neither indicator: run");
+
+        e.reskin = "COAL".into();
+        assert!(!has_reskin_gradient(&e, false), "reskin alone: run");
+
+        e.reskin.clear();
+        e.gradient = "Mirage".into();
+        assert!(!has_reskin_gradient(&e, false), "gradient alone: run");
+
+        e.reskin = "COAL".into();
+        assert!(has_reskin_gradient(&e, false), "both OCR labels: catch");
+        e.gradient.clear();
+        assert!(has_reskin_gradient(&e, true), "reskin text + visual gradient chip: catch");
+        assert!(!has_reskin_gradient(&e, false), "reskin text without gradient chip: run");
     }
 
     #[test]
