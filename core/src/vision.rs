@@ -136,27 +136,60 @@ pub fn chat_open(f: &Frame) -> Option<bool> {
     Some(px::count(f, b) > 0 && share(f, b, |c| lo(c) > 200) > 0.4)
 }
 
-/// The gradient chip can be visibly colored even when OCR cannot read its label.
-/// Compare its inner fill with the calibrated gray of the surrounding box: blank tabs
-/// match the box; a gradient tab is tinted. The reskin row is above this region.
+/// The gradient label/chip can remain visible even when OCR misses its name.
+/// Compare the center strip with the box background immediately to either side, rather
+/// than a hard-coded gray: RDPs and themes can render the whole box in a different gray.
+/// A real gradient also has color (or colored glyphs); a plain gray strip must not count.
 pub fn gradient_visible(f: &Frame, lay: &Layout) -> bool {
     let b = lay.boxed(layout::GRADIENT_TAB);
     let (x0, y0, x1, y1) = px::clip(f, b);
     let (w, h) = (x1 - x0, y1 - y0);
-    if w < 12 || h < 6 {
+    if w < 24 || h < 8 {
         return false;
     }
+
     let inner = IBox::new(
         (x0 + w / 6) as i32,
         (y0 + h / 4) as i32,
         (x1 - w / 6) as i32,
         (y1 - h / 4) as i32,
     );
+    let side_y0 = (y0 + h / 8) as i32;
+    let side_y1 = (y1 - h / 8) as i32;
+    let left = lay.boxed(IBox::new(
+        layout::BOX.l + 6,
+        layout::BOX_END + 3,
+        layout::GRADIENT_TAB.l - 6,
+        layout::BOX.b - 3,
+    ));
+    let right = lay.boxed(IBox::new(
+        layout::GRADIENT_TAB.r + 6,
+        layout::BOX_END + 3,
+        layout::BOX.r - 6,
+        layout::BOX.b - 3,
+    ));
+    let left = IBox::new(left.l, side_y0.max(left.t), left.r, side_y1.min(left.b));
+    let right = IBox::new(right.l, side_y0.max(right.t), right.r, side_y1.min(right.b));
+    let (Some(a), Some(b)) = (median(f, left, |_| true), median(f, right, |_| true)) else {
+        return false;
+    };
     let Some(fill) = median(f, inner, |_| true) else {
         return false;
     };
-    let gray = lay.color("box").unwrap_or(layout::BOX_GRAY).map(|v| v as f64);
-    (0..3).filter(|&i| (fill[i] - gray[i]).abs() >= 18.0).count() >= 2
+
+    // Some gradients are painted as colored text on the normal box background.
+    // These pixels are chromatic, unlike gray/white reskin text above this row.
+    if share(f, inner, |c| hi(c) - lo(c) >= 18) > 0.005 {
+        return true;
+    }
+
+    // Others tint the whole chip. Require both a hue and a difference from the
+    // local background, so a globally darker/lighter gray cannot look like a gradient.
+    let background = (0..3).map(|i| (a[i] + b[i]) / 2.0).collect::<Vec<_>>();
+    let chroma = fill.iter().fold(f64::MIN, |m, v| m.max(*v))
+        - fill.iter().fold(f64::MAX, |m, v| m.min(*v));
+    chroma >= 12.0
+        && (0..3).filter(|&i| (fill[i] - background[i]).abs() >= 18.0).count() >= 2
 }
 
 /// (shiny, tint, owned): the dark blue star, the yellow sparkle, and the little
@@ -368,8 +401,10 @@ mod gradient_tests {
     use super::*;
 
     #[test]
-    fn gradient_chip_is_detected_without_ocr_but_reskin_row_alone_is_not() {
+    fn gradient_detector_does_not_confuse_reskin_or_gray_theme_with_gradient() {
         let lay = Layout::flat(layout::MUTE);
+
+        // A blank chip is gray.
         let mut frame = Frame::from_pixel(2000, 1200, image::Rgb([143, 143, 143]));
         assert!(!gradient_visible(&frame, &lay));
 
@@ -382,7 +417,17 @@ mod gradient_tests {
         }
         assert!(!gradient_visible(&frame, &lay));
 
-        // The gradient chip itself is tinted, even if no gradient word was recognized.
+        // A different all-gray theme must still be treated as blank, not as a gradient.
+        let other_gray = Frame::from_pixel(2000, 1200, image::Rgb([176, 176, 176]));
+        assert!(!gradient_visible(&other_gray, &lay));
+    }
+
+    #[test]
+    fn gradient_chip_is_detected_even_when_ocr_misses_its_label() {
+        let lay = Layout::flat(layout::MUTE);
+        let mut frame = Frame::from_pixel(2000, 1200, image::Rgb([143, 143, 143]));
+
+        // A pastel tinted chip, with no OCR/text necessary.
         let tab = lay.boxed(layout::GRADIENT_TAB);
         let inner = IBox::new(tab.l + tab.w() / 6, tab.t + tab.h() / 4,
                               tab.r - tab.w() / 6, tab.b - tab.h() / 4);
@@ -392,5 +437,14 @@ mod gradient_tests {
             }
         }
         assert!(gradient_visible(&frame, &lay));
+
+        // Colored gradient letters on the normal gray chip must also be detectable.
+        let mut text_frame = Frame::from_pixel(2000, 1200, image::Rgb([143, 143, 143]));
+        for y in inner.t + 5..inner.b - 5 {
+            for x in inner.l + 20..inner.l + 55 {
+                text_frame.put_pixel(x as u32, y as u32, image::Rgb([60, 120, 235]));
+            }
+        }
+        assert!(gradient_visible(&text_frame, &lay));
     }
 }
