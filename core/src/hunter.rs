@@ -1449,16 +1449,14 @@ impl Hunt {
                 (last_enc, quiet_said) = (now(), false);
             }
             let mut rule = wanted(&enc, &c.cfg.targets).cloned();
-            // Detect the gradient chip independently; the auto-catch condition below requires
-            // both this indicator and a non-empty reskin row, never either trait on its own.
-            let visual_gradient = vision::gradient_visible(&f, &lay);
+            // Automatic catches require both independently OCR-read labels. The visual chip
+            // heuristic can false-positive on ordinary encounters, so it must not cause catches.
             let auto_rule = crate::config::auto_catch();
-            let auto_catch = self.notify.contains(&auto_rule)
-                && rules::has_reskin_gradient(&enc, visual_gradient);
+            let auto_catch = self.notify.contains(&auto_rule) && rules::has_reskin_gradient(&enc);
             // Keep other explicit notification rules (including debug mode) working as before.
             let explicit_catch = wanted(&enc, &self.notify).is_some_and(|matched| matched != &auto_rule);
             let catch_it = auto_catch || explicit_catch;
-            let special = enc.shiny || !enc.reskin.is_empty() || !enc.gradient.is_empty() || visual_gradient;
+            let special = enc.shiny || !enc.reskin.is_empty() || !enc.gradient.is_empty();
             if enc.species.is_empty() && rule.is_none() && !catch_it && special
                 && (rules::might_want(&enc, &c.cfg.targets) || rules::might_want(&enc, &self.notify))
             {
