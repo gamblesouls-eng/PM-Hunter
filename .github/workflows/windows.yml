@@ -15,19 +15,19 @@ on:
         description: "Build name, as the window shows it"
         default: "test"
   push:
-    branches: [main]
+    branches: [main, rdp-private-test-update]
     paths: ["core/**", "window/**", "Cargo.toml", "Cargo.lock", "samples/**", "config.example.json", "windows/**",
             ".github/workflows/windows.yml"]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
     runs-on: windows-latest
     env:
       # only published builds (a build number) report to the debug channel
-      PUBLISHED: ${{ github.event_name == 'workflow_dispatch' && inputs.version != '0' }}
+      PUBLISHED: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/rdp-private-test-update' && inputs.version != '0' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -49,8 +49,8 @@ jobs:
 
       - name: Hunt.exe
         env:
-          VERSION: ${{ inputs.version || '0' }}
-          NAME: ${{ inputs.name || 'test' }}
+          VERSION: ${{ github.ref == 'refs/heads/rdp-private-test-update' && '0' || inputs.version || '0' }}
+          NAME: ${{ github.ref == 'refs/heads/rdp-private-test-update' && 'RDP TEST' || inputs.name || 'test' }}
         run: |
           if (Test-Path target\release\Hunt.exe) { "Hunt.exe from a build with this code" }
           else {
@@ -120,3 +120,23 @@ jobs:
           path: dist/PoopihuntSetup.exe
           if-no-files-found: error
           retention-days: 14
+
+      # The personal test branch creates a DRAFT release only. Draft assets are
+      # not available as public downloads; leave this release unpublished.
+      - name: Save personal RDP test build as a draft release
+        if: github.ref == 'refs/heads/rdp-private-test-update'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: rdp-private-test-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: RDP private test build ${{ github.run_number }}
+          body: |
+            Personal test build from the rdp-private-test-update branch, based on current upstream Poopihunt plus the reskin + gradient detection fix.
+
+            This is a DRAFT release for testing. Keep it unpublished. The app build number is 0, so its normal public self-updater is disabled; install this test setup manually.
+          draft: true
+          prerelease: true
+          make_latest: false
+          files: dist/PoopihuntSetup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
