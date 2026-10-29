@@ -209,6 +209,12 @@ pub fn field_ok(want: &Value, got: &Value) -> bool {
 
 pub type Rule = serde_json::Map<String, Value>;
 
+/// Whether the automatic reskin + gradient catch condition is met. The gradient
+/// may be detected from its colored swatch even when OCR can't read the label.
+pub fn has_reskin_gradient(enc: &Enc, gradient_visible: bool) -> bool {
+    !enc.reskin.trim().is_empty() && (!enc.gradient.trim().is_empty() || gradient_visible)
+}
+
 pub fn rule_ok(rule: &Rule, enc: &Enc) -> bool {
     rule.iter().all(|(k, v)| {
         if k == "not_species" { !field_ok(v, &enc.get("species")) } else { field_ok(v, &enc.get(k)) }
