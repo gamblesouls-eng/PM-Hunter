@@ -1303,8 +1303,11 @@ impl Hunt {
                 (last_enc, quiet_said) = (now(), false);
             }
             let mut rule = wanted(&enc, &c.cfg.targets).cloned();
-            let catch_it = wanted(&enc, &self.notify).is_some();
-            let special = enc.shiny || !enc.reskin.is_empty() || !enc.gradient.is_empty();
+            // The gradient's colored swatch can be clear even when OCR misses its name.
+            // If that swatch and the white reskin text are both present, catch it instead of Run.
+            let visual_gradient = !enc.reskin.trim().is_empty() && vision::gradient_visible(&f, &lay);
+            let catch_it = wanted(&enc, &self.notify).is_some() || rules::has_reskin_gradient(&enc, visual_gradient);
+            let special = enc.shiny || !enc.reskin.is_empty() || !enc.gradient.is_empty() || visual_gradient;
             if enc.species.is_empty() && rule.is_none() && !catch_it && special
                 && (rules::might_want(&enc, &c.cfg.targets) || rules::might_want(&enc, &self.notify))
             {
