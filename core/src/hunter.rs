@@ -1449,8 +1449,11 @@ impl Hunt {
                 (last_enc, quiet_said) = (now(), false);
             }
             let mut rule = wanted(&enc, &c.cfg.targets).cloned();
-            let catch_it = wanted(&enc, &self.notify).is_some();
-            let special = enc.shiny || !enc.reskin.is_empty() || !enc.gradient.is_empty();
+            // The gradient chip can be tinted while its label is missed by OCR.
+            // With reskin text also present, treat both visual indicators as an auto-catch.
+            let visual_gradient = !enc.reskin.trim().is_empty() && vision::gradient_visible(&f, &lay);
+            let catch_it = wanted(&enc, &self.notify).is_some() || visual_gradient;
+            let special = enc.shiny || !enc.reskin.is_empty() || !enc.gradient.is_empty() || visual_gradient;
             if enc.species.is_empty() && rule.is_none() && !catch_it && special
                 && (rules::might_want(&enc, &c.cfg.targets) || rules::might_want(&enc, &self.notify))
             {
