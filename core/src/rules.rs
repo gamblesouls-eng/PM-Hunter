@@ -369,6 +369,18 @@ mod tests {
     }
 
     #[test]
+    fn reskin_and_gradient_auto_catch_includes_visual_swatch_when_gradient_ocr_misses() {
+        let mut e = enc("Entei");
+        e.reskin = "COAL".into();
+        assert!(!has_reskin_gradient(&e, false)); // reskin alone is not enough
+        assert!(has_reskin_gradient(&e, true)); // colored gradient indicator, no readable label
+        e.gradient = "Mirage".into();
+        assert!(has_reskin_gradient(&e, false)); // both labels read normally
+        e.reskin.clear();
+        assert!(!has_reskin_gradient(&e, true)); // gradient alone is not enough
+    }
+
+    #[test]
     fn rules() {
         let rule: Rule = serde_json::from_value(json!({"species": "Tympole", "shiny": true})).unwrap();
         let mut e = enc("Tympole");
