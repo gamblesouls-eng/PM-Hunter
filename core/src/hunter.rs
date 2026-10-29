@@ -1452,7 +1452,7 @@ impl Hunt {
             // Automatic catches require both independently OCR-read labels. The visual chip
             // heuristic can false-positive on ordinary encounters, so it must not cause catches.
             let auto_rule = crate::config::auto_catch();
-            let auto_catch = self.notify.contains(&auto_rule) && rules::has_reskin_gradient(&enc);
+            let auto_catch = self.notify.contains(&auto_rule) && rules::has_reskin_gradient(&enc, false);
             // Keep other explicit notification rules (including debug mode) working as before.
             let explicit_catch = wanted(&enc, &self.notify).is_some_and(|matched| matched != &auto_rule);
             let catch_it = auto_catch || explicit_catch;
