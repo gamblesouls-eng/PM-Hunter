@@ -286,3 +286,29 @@ pub fn sprite(f: &Frame, lay: &Layout) -> Frame {
         image::Rgb(at(f, x as usize, y as usize))
     })
 }
+
+#[cfg(test)]
+mod gradient_tests {
+    use super::*;
+
+    #[test]
+    fn gradient_swatch_is_detected_without_reading_its_label() {
+        let lay = Layout::flat(layout::MUTE);
+        let tab = lay.boxed(layout::GRADIENT_TAB);
+        let mut plain = Frame::from_pixel(2000, 1200, image::Rgb([143, 143, 143]));
+        assert!(!gradient_visible(&plain, &lay));
+
+        // A two-color swatch, like the gradient indicator, with no OCR text at all.
+        let top = tab.t + tab.h() * 2 / 5;
+        let middle = tab.l + tab.w() / 2;
+        for y in top..tab.b {
+            for x in tab.l..middle {
+                plain.put_pixel(x as u32, y as u32, image::Rgb([100, 96, 117]));
+            }
+            for x in middle..tab.r {
+                plain.put_pixel(x as u32, y as u32, image::Rgb([189, 184, 197]));
+            }
+        }
+        assert!(gradient_visible(&plain, &lay));
+    }
+}
