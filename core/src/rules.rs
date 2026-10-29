@@ -211,8 +211,8 @@ pub type Rule = serde_json::Map<String, Value>;
 
 /// Auto-catch only when both indicators are present. The gradient may be visible
 /// as a colored chip even if OCR failed to read its label.
-pub fn has_reskin_gradient(enc: &Enc, gradient_visible: bool) -> bool {
-    !enc.reskin.trim().is_empty() && (!enc.gradient.trim().is_empty() || gradient_visible)
+pub fn has_reskin_gradient(enc: &Enc, _gradient_visible: bool) -> bool {
+    !enc.reskin.trim().is_empty() && !enc.gradient.trim().is_empty()
 }
 
 pub fn rule_ok(rule: &Rule, enc: &Enc) -> bool {
@@ -384,7 +384,7 @@ mod tests {
         e.reskin = "COAL".into();
         assert!(has_reskin_gradient(&e, false), "both OCR labels: catch");
         e.gradient.clear();
-        assert!(has_reskin_gradient(&e, true), "reskin text + visual gradient chip: catch");
+        assert!(!has_reskin_gradient(&e, true), "visual gradient guess without OCR label: run");
         assert!(!has_reskin_gradient(&e, false), "reskin text without gradient chip: run");
     }
 
