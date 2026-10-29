@@ -136,6 +136,29 @@ pub fn chat_open(f: &Frame) -> Option<bool> {
     Some(px::count(f, b) > 0 && share(f, b, |c| lo(c) > 200) > 0.4)
 }
 
+/// The gradient chip can be visibly colored even when OCR cannot read its label.
+/// Compare its inner fill with the calibrated gray of the surrounding box: blank tabs
+/// match the box; a gradient tab is tinted. The reskin row is above this region.
+pub fn gradient_visible(f: &Frame, lay: &Layout) -> bool {
+    let b = lay.boxed(layout::GRADIENT_TAB);
+    let (x0, y0, x1, y1) = px::clip(f, b);
+    let (w, h) = (x1 - x0, y1 - y0);
+    if w < 12 || h < 6 {
+        return false;
+    }
+    let inner = IBox::new(
+        (x0 + w / 6) as i32,
+        (y0 + h / 4) as i32,
+        (x1 - w / 6) as i32,
+        (y1 - h / 4) as i32,
+    );
+    let Some(fill) = median(f, inner, |_| true) else {
+        return false;
+    };
+    let gray = lay.color("box").unwrap_or(layout::BOX_GRAY).map(|v| v as f64);
+    (0..3).filter(|&i| (fill[i] - gray[i]).abs() >= 18.0).count() >= 2
+}
+
 /// (shiny, tint, owned): the dark blue star, the yellow sparkle, and the little
 /// Poke Ball left of the HP bar (a species caught before).
 pub fn icons(f: &Frame, lay: &Layout) -> (bool, bool, bool) {
@@ -338,4 +361,36 @@ pub fn bag_close(f: &Frame, title: Pt) -> Option<Pt> {
         .filter(|b| b.b.w() > w / 40 && b.b.h() > h / 80 && b.b.w() > b.b.h())
         .max_by_key(|b| b.size)
         .map(|b| b.b.center())
+}
+
+#[cfg(test)]
+mod gradient_tests {
+    use super::*;
+
+    #[test]
+    fn gradient_chip_is_detected_without_ocr_but_reskin_row_alone_is_not() {
+        let lay = Layout::flat(layout::MUTE);
+        let mut frame = Frame::from_pixel(2000, 1200, image::Rgb([143, 143, 143]));
+        assert!(!gradient_visible(&frame, &lay));
+
+        // White reskin text is in a separate row and must not count as a gradient.
+        let reskin = lay.boxed(layout::RESKIN_ROW);
+        for y in reskin.t + 4..reskin.b - 4 {
+            for x in reskin.l + 8..reskin.r - 8 {
+                frame.put_pixel(x as u32, y as u32, image::Rgb([245, 245, 245]));
+            }
+        }
+        assert!(!gradient_visible(&frame, &lay));
+
+        // The gradient chip itself is tinted, even if no gradient word was recognized.
+        let tab = lay.boxed(layout::GRADIENT_TAB);
+        let inner = IBox::new(tab.l + tab.w() / 6, tab.t + tab.h() / 4,
+                              tab.r - tab.w() / 6, tab.b - tab.h() / 4);
+        for y in inner.t..inner.b {
+            for x in inner.l..inner.r {
+                frame.put_pixel(x as u32, y as u32, image::Rgb([195, 190, 205]));
+            }
+        }
+        assert!(gradient_visible(&frame, &lay));
+    }
 }
