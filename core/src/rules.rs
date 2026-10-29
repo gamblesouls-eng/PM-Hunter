@@ -378,7 +378,8 @@ mod tests {
 
         e.reskin.clear();
         e.gradient = "Mirage".into();
-        assert!(!has_reskin_gradient(&e, false), "gradient alone: run");
+        assert!(!has_reskin_gradient(&e, false), "gradient OCR alone: run");
+        assert!(!has_reskin_gradient(&e, true), "visual gradient alone: run");
 
         e.reskin = "COAL".into();
         assert!(has_reskin_gradient(&e, false), "both OCR labels: catch");
