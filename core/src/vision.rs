@@ -136,62 +136,6 @@ pub fn chat_open(f: &Frame) -> Option<bool> {
     Some(px::count(f, b) > 0 && share(f, b, |c| lo(c) > 200) > 0.4)
 }
 
-/// The gradient label/chip can remain visible even when OCR misses its name.
-/// Compare the center strip with the box background immediately to either side, rather
-/// than a hard-coded gray: RDPs and themes can render the whole box in a different gray.
-/// A real gradient also has color (or colored glyphs); a plain gray strip must not count.
-pub fn gradient_visible(f: &Frame, lay: &Layout) -> bool {
-    let b = lay.boxed(layout::GRADIENT_TAB);
-    let (x0, y0, x1, y1) = px::clip(f, b);
-    let (w, h) = (x1 - x0, y1 - y0);
-    if w < 24 || h < 8 {
-        return false;
-    }
-
-    let inner = IBox::new(
-        (x0 + w / 6) as i32,
-        (y0 + h / 4) as i32,
-        (x1 - w / 6) as i32,
-        (y1 - h / 4) as i32,
-    );
-    let side_y0 = (y0 + h / 8) as i32;
-    let side_y1 = (y1 - h / 8) as i32;
-    let left = lay.boxed(IBox::new(
-        layout::BOX.l + 6,
-        layout::BOX_END + 3,
-        layout::GRADIENT_TAB.l - 6,
-        layout::BOX.b - 3,
-    ));
-    let right = lay.boxed(IBox::new(
-        layout::GRADIENT_TAB.r + 6,
-        layout::BOX_END + 3,
-        layout::BOX.r - 6,
-        layout::BOX.b - 3,
-    ));
-    let left = IBox::new(left.l, side_y0.max(left.t), left.r, side_y1.min(left.b));
-    let right = IBox::new(right.l, side_y0.max(right.t), right.r, side_y1.min(right.b));
-    let (Some(a), Some(b)) = (median(f, left, |_| true), median(f, right, |_| true)) else {
-        return false;
-    };
-    let Some(fill) = median(f, inner, |_| true) else {
-        return false;
-    };
-
-    // Some gradients are painted as colored text on the normal box background.
-    // These pixels are chromatic, unlike gray/white reskin text above this row.
-    if share(f, inner, |c| hi(c) - lo(c) >= 18) > 0.005 {
-        return true;
-    }
-
-    // Others tint the whole chip. Require both a hue and a difference from the
-    // local background, so a globally darker/lighter gray cannot look like a gradient.
-    let background = (0..3).map(|i| (a[i] + b[i]) / 2.0).collect::<Vec<_>>();
-    let chroma = fill.iter().fold(f64::MIN, |m, v| m.max(*v))
-        - fill.iter().fold(f64::MAX, |m, v| m.min(*v));
-    chroma >= 12.0
-        && (0..3).filter(|&i| (fill[i] - background[i]).abs() >= 18.0).count() >= 2
-}
-
 /// (shiny, tint, owned): the dark blue star, the yellow sparkle, and the little
 /// Poke Ball left of the HP bar (a species caught before).
 pub fn icons(f: &Frame, lay: &Layout) -> (bool, bool, bool) {
@@ -200,6 +144,82 @@ pub fn icons(f: &Frame, lay: &Layout) -> (bool, bool, bool) {
     let tint = share(f, b, |c| c[0] > 220 && c[1] > 200 && c[2] < 160) > 0.008;
     let owned = share(f, lay.boxed(layout::OWNED_ICON), |c| c[0] > 170 && c[1] < 90 && c[2] < 90) > 0.01;
     (shiny, tint, owned)
+}
+
+/// A reskin's name is under the HP bar: the row right of the icons isn't all
+/// the box's gray (it is, without one), so Windows' text recognition missing it
+/// doesn't decide. Only lines of the box's gray count, down to its dark bottom
+/// edge: a window scaled a little off brings that edge or the gradient tab into
+/// the row, and they aren't a name.
+pub fn reskin_shown(f: &Frame, lay: &Layout) -> bool {
+    let gray = lay.color("box").unwrap_or(layout::BOX_GRAY);
+    let r = lay.boxed(layout::RESKIN_INK);
+    let pad = (8.0 * lay.v()).round() as i32;
+    let (mut lines, mut ink, mut inside) = (0usize, 0.0, false);
+    for y in r.t - pad..r.b + pad {
+        let off = share(f, IBox::new(r.l, y, r.r, y + 1), |c| !near(c, gray, 25));
+        if off < 0.4 {
+            (lines, ink, inside) = (lines + 1, ink + off, true);
+        } else if inside {
+            break; // the box's bottom edge
+        }
+    }
+    lines > 0 && ink / lines as f64 > 0.005
+}
+
+/// The gradient's tab hangs under the box, drawn with a thin dark outline: its
+/// bottom and a side are found (Some(true)), or not where the game around it is
+/// light enough to show one (Some(false)). None: too dark there to tell.
+pub fn gradient_tab(f: &Frame, lay: &Layout) -> Option<bool> {
+    let (left, right, bottom) = layout::TAB_EDGES;
+    let lum = |p: Pt| -> Option<i32> {
+        let (x, y) = (p.x.round() as i64, p.y.round() as i64);
+        (x >= 0 && y >= 0 && (x as u32) < f.width() && (y as u32) < f.height())
+            .then(|| px::at(f, x as usize, y as usize).iter().map(|&v| v as i32).max().unwrap())
+    };
+    // across a line at (x, y) (along: the line runs left to right): the darkest of a dozen
+    // px either way (a window scaled a little off) is well darker than 9 px out on both sides
+    let crosses = |x: f64, y: f64, along: bool| -> Option<bool> {
+        let at = |d: f64| if along { lay.xy(x, y + d) } else { lay.xy(x + d, y) };
+        let (d, dark) = (-12..=12).filter_map(|d| lum(at(d as f64)).map(|v| (d as f64, v))).min_by_key(|a| a.1)?;
+        let (a, b) = (lum(at(d - 9.0))?, lum(at(d + 9.0))?);
+        Some(dark + 25 < a.min(b))
+    };
+    let line = |pts: Vec<(f64, f64)>, along: bool| -> f64 {
+        let hits: Vec<bool> = pts.into_iter().filter_map(|(x, y)| crosses(x, y, along)).collect();
+        if hits.is_empty() { 0.0 } else { hits.iter().filter(|h| **h).count() as f64 / hits.len() as f64 }
+    };
+    let b = line((0..40).map(|i| (left as f64 + 15.0 + i as f64 * 9.0, bottom as f64)).collect(), true);
+    let side = |x: i32| line((0..8).map(|i| (x as f64, 494.0 + i as f64 * 4.0)).collect(), false);
+    if b >= 0.6 && side(left).max(side(right)) >= 0.6 {
+        return Some(true);
+    }
+    // under where it would be: light enough for a dark outline to stand out
+    let under = lay.boxf(left as f64, bottom as f64 + 6.0, right as f64, bottom as f64 + 16.0);
+    (share(f, under, |c| hi(c) > 70) > 0.5).then_some(false)
+}
+
+/// The game's white dialog box at the bottom (the save's messages: "Save successful",
+/// "Error. Your save did not save correctly." and the rest, up to ten of them): its
+/// middle, or None. Rows in the screen's lower part that are white nearly all
+/// the way across its middle.
+pub fn dialog_box(f: &Frame) -> Option<Pt> {
+    let (w, h) = (f.width() as i32, f.height() as i32);
+    let (l, r) = (w * 3 / 10, w * 7 / 10);
+    let rows: Vec<i32> = (h * 6 / 10..h)
+        .filter(|&y| share(f, IBox::new(l, y, r, y + 1), |c| lo(c) > 225) > 0.85)
+        .collect();
+    let (&top, &bottom) = (rows.first()?, rows.last()?);
+    (rows.len() as f64 > h as f64 * 0.04).then(|| Pt::new(w as f64 / 2.0, (top + bottom) as f64 / 2.0))
+}
+
+/// The white dialog box is done typing: its red arrow (bottom right) asks for a
+/// click. Something white on the ground isn't clicked for one.
+pub fn dialog_waiting(f: &Frame) -> Option<Pt> {
+    let at = dialog_box(f)?;
+    let (w, h) = (f.width() as i32, f.height() as i32);
+    let corner = IBox::new(w * 6 / 10, at.y as i32, w * 9 / 10, h);
+    (mask(f, corner, red).blobs().iter().any(|b| b.b.w() >= 4 && b.b.h() >= 4)).then_some(at)
 }
 
 /// How much of the screen isn't black, in %: 0 means the screenshot is blank.
@@ -394,57 +414,4 @@ pub fn bag_close(f: &Frame, title: Pt) -> Option<Pt> {
         .filter(|b| b.b.w() > w / 40 && b.b.h() > h / 80 && b.b.w() > b.b.h())
         .max_by_key(|b| b.size)
         .map(|b| b.b.center())
-}
-
-#[cfg(test)]
-mod gradient_tests {
-    use super::*;
-
-    #[test]
-    fn gradient_detector_does_not_confuse_reskin_or_gray_theme_with_gradient() {
-        let lay = Layout::flat(layout::MUTE);
-
-        // A blank chip is gray.
-        let mut frame = Frame::from_pixel(2000, 1200, image::Rgb([143, 143, 143]));
-        assert!(!gradient_visible(&frame, &lay));
-
-        // White reskin text is in a separate row and must not count as a gradient.
-        let reskin = lay.boxed(layout::RESKIN_ROW);
-        for y in reskin.t + 4..reskin.b - 4 {
-            for x in reskin.l + 8..reskin.r - 8 {
-                frame.put_pixel(x as u32, y as u32, image::Rgb([245, 245, 245]));
-            }
-        }
-        assert!(!gradient_visible(&frame, &lay));
-
-        // A different all-gray theme must still be treated as blank, not as a gradient.
-        let other_gray = Frame::from_pixel(2000, 1200, image::Rgb([176, 176, 176]));
-        assert!(!gradient_visible(&other_gray, &lay));
-    }
-
-    #[test]
-    fn gradient_chip_is_detected_even_when_ocr_misses_its_label() {
-        let lay = Layout::flat(layout::MUTE);
-        let mut frame = Frame::from_pixel(2000, 1200, image::Rgb([143, 143, 143]));
-
-        // A pastel tinted chip, with no OCR/text necessary.
-        let tab = lay.boxed(layout::GRADIENT_TAB);
-        let inner = IBox::new(tab.l + tab.w() / 6, tab.t + tab.h() / 4,
-                              tab.r - tab.w() / 6, tab.b - tab.h() / 4);
-        for y in inner.t..inner.b {
-            for x in inner.l..inner.r {
-                frame.put_pixel(x as u32, y as u32, image::Rgb([195, 190, 205]));
-            }
-        }
-        assert!(gradient_visible(&frame, &lay));
-
-        // Colored gradient letters on the normal gray chip must also be detectable.
-        let mut text_frame = Frame::from_pixel(2000, 1200, image::Rgb([143, 143, 143]));
-        for y in inner.t + 5..inner.b - 5 {
-            for x in inner.l + 20..inner.l + 55 {
-                text_frame.put_pixel(x as u32, y as u32, image::Rgb([60, 120, 235]));
-            }
-        }
-        assert!(gradient_visible(&text_frame, &lay));
-    }
 }

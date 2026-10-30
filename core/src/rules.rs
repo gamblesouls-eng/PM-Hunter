@@ -96,6 +96,9 @@ pub fn title_case(s: &str) -> String {
     out
 }
 
+/// A reskin or gradient seen on screen whose name didn't read.
+pub const UNREAD: &str = "?";
+
 /// Lower case letters and digits only.
 pub fn norm(s: &str) -> String {
     s.to_lowercase().chars().filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit()).collect()
@@ -209,12 +212,6 @@ pub fn field_ok(want: &Value, got: &Value) -> bool {
 
 pub type Rule = serde_json::Map<String, Value>;
 
-/// Auto-catch only when both indicators are present. The gradient may be visible
-/// as a colored chip even if OCR failed to read its label.
-pub fn has_reskin_gradient(enc: &Enc, _gradient_visible: bool) -> bool {
-    !enc.reskin.trim().is_empty() && !enc.gradient.trim().is_empty()
-}
-
 pub fn rule_ok(rule: &Rule, enc: &Enc) -> bool {
     rule.iter().all(|(k, v)| {
         if k == "not_species" { !field_ok(v, &enc.get("species")) } else { field_ok(v, &enc.get(k)) }
@@ -274,8 +271,9 @@ pub fn show(rule: &Rule) -> String {
 
 /// The enemy, once the reads of it agree, or None: the last two the same, or
 /// four in a row of the same Pokemon and level, with the rows most often read
-/// (Windows reads the small rows a little differently each time). The icons
-/// count when any read saw them: a sparkling star comes and goes.
+/// (Windows reads the small rows a little differently each time). The icons,
+/// a reskin and a gradient count when any read saw them: a sparkling star comes
+/// and goes, and Windows misses the colored rows on some reads.
 pub fn settled(reads: &[Enc]) -> Option<Enc> {
     let last = reads.last()?;
     // a read without the level agrees with one that has it (Windows reads a light "Lv. 18"
@@ -297,21 +295,33 @@ pub fn settled(reads: &[Enc]) -> Option<Enc> {
     if enc.level.is_empty() {
         enc.level = run.iter().rev().map(|r| r.level.clone()).find(|l| !l.is_empty()).unwrap_or_default();
     }
-    if !same {
-        let most = |f: fn(&Enc) -> &String| -> String {
-            let seen: Vec<&String> = run.iter().map(|r| f(r)).collect();
-            let mut best: Option<(&String, (usize, usize))> = None;
-            for v in &seen {
-                let key = (seen.iter().filter(|x| x == &v).count(), v.chars().count());
-                if best.is_none_or(|b| key > b.1) {
-                    best = Some((v, key));
-                }
+    // the most read, the longer on a tie; given: only names read (an unread one if there's none)
+    let most = |f: fn(&Enc) -> &String, given: bool| -> String {
+        let seen: Vec<&String> = run.iter().map(|r| f(r)).filter(|v| !given || !(v.is_empty() || *v == UNREAD)).collect();
+        if given && seen.is_empty() {
+            return if run.iter().any(|r| f(r) == UNREAD) { UNREAD.into() } else { String::new() };
+        }
+        let mut best: Option<(&String, (usize, usize))> = None;
+        for v in &seen {
+            let key = (seen.iter().filter(|x| x == &v).count(), v.chars().count());
+            if best.is_none_or(|b| key > b.1) {
+                best = Some((v, key));
             }
-            best.map(|b| b.0.clone()).unwrap_or_default()
-        };
-        enc.reskin = most(|e| &e.reskin);
-        enc.gradient = most(|e| &e.gradient);
-        enc.status = most(|e| &e.status);
+        }
+        best.map(|b| b.0.clone()).unwrap_or_default()
+    };
+    if !same {
+        enc.reskin = most(|e| &e.reskin, false);
+        enc.gradient = most(|e| &e.gradient, false);
+        enc.status = most(|e| &e.status, false);
+    }
+    // a reskin or gradient any read saw counts, like the icons: Windows misses the colored
+    // rows on some reads (an Azurine Latios read once, then twice without: run from)
+    if enc.reskin.is_empty() || enc.reskin == UNREAD {
+        enc.reskin = most(|e| &e.reskin, true);
+    }
+    if enc.gradient.is_empty() || enc.gradient == UNREAD {
+        enc.gradient = most(|e| &e.gradient, true);
     }
     enc.shiny = run.iter().any(|r| r.shiny);
     enc.tint = run.iter().any(|r| r.tint);
@@ -327,7 +337,7 @@ pub fn same_mon(a: &Enc, b: &Enc) -> bool {
     same_word(&a.species, &b.species)
         && [(&a.reskin, &b.reskin), (&a.gradient, &b.gradient)]
             .iter()
-            .all(|(x, y)| x.is_empty() || y.is_empty() || same_word(x, y))
+            .all(|(x, y)| [x, y].iter().any(|v| v.is_empty() || v.as_str() == UNREAD) || same_word(x, y))
 }
 
 #[cfg(test)]
@@ -369,26 +379,6 @@ mod tests {
     }
 
     #[test]
-    fn auto_catch_requires_reskin_and_gradient_together() {
-        let mut e = enc("Entei");
-        assert!(!has_reskin_gradient(&e, false), "neither indicator: run");
-
-        e.reskin = "COAL".into();
-        assert!(!has_reskin_gradient(&e, false), "reskin alone: run");
-
-        e.reskin.clear();
-        e.gradient = "Mirage".into();
-        assert!(!has_reskin_gradient(&e, false), "gradient OCR alone: run");
-        assert!(!has_reskin_gradient(&e, true), "visual gradient alone: run");
-
-        e.reskin = "COAL".into();
-        assert!(has_reskin_gradient(&e, false), "both OCR labels: catch");
-        e.gradient.clear();
-        assert!(!has_reskin_gradient(&e, true), "visual gradient guess without OCR label: run");
-        assert!(!has_reskin_gradient(&e, false), "reskin text without gradient chip: run");
-    }
-
-    #[test]
     fn rules() {
         let rule: Rule = serde_json::from_value(json!({"species": "Tympole", "shiny": true})).unwrap();
         let mut e = enc("Tympole");
@@ -424,6 +414,19 @@ mod tests {
         assert_eq!(settled(&[l.clone(), e.clone()]).unwrap().level, "18");
         assert_eq!(settled(&[e.clone(), l.clone(), e.clone()]).unwrap().level, "18");
         assert_eq!(settled(&[e.clone(), e]).unwrap().level, "");
+        // a gradient read once, then missed twice (Windows): still the gradient
+        let mut g = enc("Latios");
+        g.level = "22".into();
+        let plain = g.clone();
+        g.gradient = "Azurine".into();
+        assert_eq!(settled(&[g.clone(), plain.clone(), plain.clone()]).unwrap().gradient, "Azurine");
+        assert_eq!(settled(&[plain.clone(), g.clone(), plain.clone(), plain.clone()]).unwrap().gradient, "Azurine");
+        // seen but not read: named by a read that did
+        let mut u = plain.clone();
+        u.gradient = UNREAD.into();
+        assert_eq!(settled(&[g.clone(), u.clone(), u.clone()]).unwrap().gradient, "Azurine");
+        assert_eq!(settled(&[u.clone(), u.clone()]).unwrap().gradient, UNREAD);
+        assert!(same_mon(&g, &u) && same_mon(&u, &g));
     }
 
     #[test]

@@ -829,6 +829,20 @@ impl Hunt {
                 enc.gradient = g;
             }
         }
+        // whether there's a reskin or gradient at all is seen, not read: the text recognition
+        // only names them (Windows misses the colored rows on some reads, and reads junk)
+        let (reskin, tab) = (vision::reskin_shown(f, lay), vision::gradient_tab(f, lay));
+        seen.push(format!("seen: reskin {reskin}, gradient tab {}", tab.map_or("unsure".into(), |t| t.to_string())));
+        if !reskin {
+            enc.reskin.clear();
+        } else if enc.reskin.is_empty() {
+            enc.reskin = rules::UNREAD.into();
+        }
+        match tab {
+            Some(false) => enc.gradient.clear(),
+            Some(true) if enc.gradient.is_empty() => enc.gradient = rules::UNREAD.into(),
+            _ => {}
+        }
         (enc.shiny, enc.tint, enc.owned) = vision::icons(f, lay);
         self.box_read = seen.join(", ");
         enc
@@ -1449,13 +1463,7 @@ impl Hunt {
                 (last_enc, quiet_said) = (now(), false);
             }
             let mut rule = wanted(&enc, &c.cfg.targets).cloned();
-            // Automatic catches require both independently OCR-read labels. The visual chip
-            // heuristic can false-positive on ordinary encounters, so it must not cause catches.
-            let auto_rule = crate::config::auto_catch();
-            let auto_catch = self.notify.contains(&auto_rule) && rules::has_reskin_gradient(&enc, false);
-            // Keep other explicit notification rules (including debug mode) working as before.
-            let explicit_catch = wanted(&enc, &self.notify).is_some_and(|matched| matched != &auto_rule);
-            let catch_it = auto_catch || explicit_catch;
+            let catch_it = wanted(&enc, &self.notify).is_some();
             let special = enc.shiny || !enc.reskin.is_empty() || !enc.gradient.is_empty();
             if enc.species.is_empty() && rule.is_none() && !catch_it && special
                 && (rules::might_want(&enc, &c.cfg.targets) || rules::might_want(&enc, &self.notify))

@@ -364,15 +364,12 @@ pub fn menu_open(texts: &[TextHit]) -> bool {
     texts.iter().filter(|t| MENU_ITEMS.iter().any(|m| norm(m) == norm(&t.text) || same_word(m, &t.text))).count() >= 2
 }
 
-/// Where to click a MENU item: its tile, half a row above its label (on a
-/// phone only the tile takes taps); the label itself on the retry, or if no
-/// other label shows how far apart the rows are. The rows' height from the
-/// labels read and how many items apart they are in the MENU (a label not
-/// read, "Party", doesn't make two rows look like one).
-pub fn menu_button(hit: Pt, texts: &[TextHit], retry: bool) -> Pt {
-    if retry {
-        return hit;
-    }
+/// Where to click a MENU item: its tile, half a row above its label (only the
+/// tile takes clicks and taps; the label under it doesn't). The rows' height from
+/// the labels read and how many items apart they are in the MENU (a label not
+/// read, "Party", doesn't make two rows look like one); with one label read, as
+/// the MENU usually is on a screen this tall (screen_h px: a row is 9.3% of it).
+pub fn menu_button(hit: Pt, texts: &[TextHit], screen_h: f64) -> Pt {
     let mut seen: std::collections::BTreeMap<usize, f64> = Default::default();
     for t in texts {
         if let Some(i) = MENU_ITEMS.iter().position(|m| norm(m) == norm(&t.text)) {
@@ -385,7 +382,8 @@ pub fn menu_button(hit: Pt, texts: &[TextHit], retry: bool) -> Pt {
         .map(|w| (w[1].1 - w[0].1) / (w[1].0 - w[0].0) as f64)
         .collect();
     steps.sort_by(f64::total_cmp);
-    if steps.is_empty() { hit } else { Pt::new(hit.x, hit.y - steps[steps.len() / 2] / 2.0) }
+    let row = steps.get(steps.len() / 2).copied().unwrap_or(screen_h * 0.093);
+    Pt::new(hit.x, hit.y - row / 2.0)
 }
 
 /// The box after Save: "Save successful", "Try again", or "Unable to save.
@@ -542,7 +540,10 @@ mod tests {
         let texts = [hit("Pokedex", 100.0, 100.0), hit("Bag", 100.0, 300.0), hit("Save", 100.0, 500.0)];
         assert!(menu_open(&texts));
         // Party (not read) between Pokedex and Bag: rows 100 px apart
-        assert_eq!(menu_button(Pt::new(100.0, 500.0), &texts, false), Pt::new(100.0, 450.0));
+        assert_eq!(menu_button(Pt::new(100.0, 500.0), &texts, 1249.0), Pt::new(100.0, 450.0));
+        // only Save read (samples/menu-open.png: its label at y 856, its tile 767 to 834)
+        let at = menu_button(Pt::new(100.0, 856.0), &[hit("Save", 100.0, 856.0)], 1249.0);
+        assert!((767.0..834.0).contains(&at.y), "{at:?}");
         assert!(save_message("Unable to save. Please wait 95 more seconds."));
         assert_eq!(save_wait("Please wait 95 more seconds."), Some(95));
         assert!(caught_said("Rattata was sent to the PC!"));

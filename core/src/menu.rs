@@ -10,7 +10,7 @@ use crate::reader::{self, find_tab, is_count, menu_button, menu_open, save_messa
 use crate::rules::{norm, same_word, Enc};
 use crate::store::Store;
 use crate::util::{clip, now, write_atomic};
-use crate::vision::{find_menu_tab, tab_look};
+use crate::vision::{self, find_menu_tab, tab_look};
 use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::sync::LazyLock;
@@ -78,7 +78,7 @@ impl Hunt {
         for t in texts {
             let n = norm(&t.text);
             if n == "bag" || n == "save" {
-                let at = menu_button(t.pt(), texts, false);
+                let at = menu_button(t.pt(), texts, f.height() as f64);
                 mine.insert(n, json!([at.x, at.y]));
             }
         }
@@ -165,7 +165,7 @@ impl Hunt {
                 (tab, tab_at) = (Some(t), now());
             }
         }
-        let end = now() + 20.0;
+        let end = now() + 45.0; // (ten messages to click through, each typing itself out)
         let (mut img, mut texts) = (None::<Frame>, Vec::new());
         while now() < end {
             self.nap(self.traits.poll)?;
@@ -181,7 +181,7 @@ impl Hunt {
                 }
                 let hit = texts.iter().find(|t| norm(&t.text) == "save").map(|t| t.pt());
                 if let Some(hit) = hit.filter(|_| menu_open(&texts)) {
-                    let at = menu_button(hit, &texts, tries > 0);
+                    let at = menu_button(hit, &texts, f.height() as f64);
                     self.trace(&format!("save: clicking Save at ({:.0}, {:.0})", at.x, at.y));
                     self.click(at)?;
                     self.remember_menu(&f, &texts, tab);
@@ -195,18 +195,26 @@ impl Hunt {
                     }
                 }
             } else if step == "message" {
-                if let Some(msg) = texts.iter().find(|t| save_message(&t.text)).cloned() {
+                let msg = texts.iter().find(|t| save_message(&t.text)).cloned();
+                if let Some(msg) = &msg {
                     if !shown {
                         self.trace(&format!("save: the game says \"{}\"", msg.text));
                     }
                     if let Some(w) = reader::save_wait(&msg.text) {
                         self.save_wait = w;
                     }
-                    // The text types itself out: a click while it's typing only finishes
-                    // it, so keep clicking until the box is gone.
                     saved = saved || msg.text.to_lowercase().contains("successful");
+                }
+                // The text types itself out: a click while it's typing only finishes it, and
+                // a save can say up to ten things in a row ("Error. Your save did not save
+                // correctly." and what to report): clicked until the white box is gone,
+                // whatever it says
+                if let Some(at) = vision::dialog_box(&f).or(msg.map(|m| m.pt())) {
+                    if !shown && texts.iter().all(|t| !save_message(&t.text)) {
+                        self.trace("save: the game's white box is up");
+                    }
                     shown = true;
-                    self.click(msg.pt())?;
+                    self.click(at)?;
                     self.nap(0.3)?;
                 } else if shown {
                     step = after; // the message was there and is gone now
@@ -217,7 +225,7 @@ impl Hunt {
                     step = "save";
                 }
             }
-            if (step == "close" || step == "closed") && texts.iter().any(|t| save_message(&t.text)) {
+            if (step == "close" || step == "closed") && (texts.iter().any(|t| save_message(&t.text)) || vision::dialog_box(&f).is_some()) {
                 // "Do not close the game until it says 'Save successful'" goes, then a
                 // moment later "Save successful…" comes up: that one's clicked away too
                 (after, step) = (step, "message");
@@ -307,7 +315,7 @@ impl Hunt {
                 continue;
             }
             if let Some(hit) = texts.iter().find(|t| norm(&t.text) == "bag").map(|t| t.pt()).filter(|_| menu_open(&texts)) {
-                let at = menu_button(hit, &texts, false);
+                let at = menu_button(hit, &texts, f.height() as f64);
                 self.trace(&format!("{why}: clicking Bag at ({:.0}, {:.0})", at.x, at.y));
                 self.click(at)?;
                 self.remember_menu(&f, &texts, tab);
@@ -434,7 +442,7 @@ impl Hunt {
     pub(crate) fn clear_leftovers(&mut self) -> R<bool> {
         let f = self.grab();
         let texts = self.screen_texts(&f);
-        if let Some(msg) = texts.iter().find(|t| save_message(&t.text)).map(|t| t.pt()) {
+        if let Some(msg) = texts.iter().find(|t| save_message(&t.text)).map(|t| t.pt()).or_else(|| vision::dialog_waiting(&f)) {
             self.click(msg)?;
             return Ok(true);
         }

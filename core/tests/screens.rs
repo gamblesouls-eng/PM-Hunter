@@ -334,3 +334,55 @@ fn reads_the_battle_and_party_words() {
     let bag = [t("Backpack", 333.0, 147.0), t("Search...", 950.0, 210.0), t("Close", 937.0, 147.0), t("x18,899", 940.0, 266.0)];
     assert!(reader::search_leftover(&bag, 700.0, 0.64).is_none());
 }
+
+#[test]
+fn sees_reskins_and_gradient_tabs_without_reading() {
+    // (reskin, gradient tab): every battle sample, on its own screen size
+    let want = [
+        ("quaxly-shiny.png", false, false),
+        ("shellos-tint.png", false, false),
+        ("remoraid-shiny.png", false, false),
+        ("dewpider-mirage.png", false, true),
+        ("marill-inferno-tint.png", true, false),
+        ("lotad-skittles.png", false, true),
+        ("tyrogue-mummified.png", true, false),
+        ("tatsugiri-plain-tint.png", false, false),
+        ("runerigus-amberfall.png", false, true), // its tab right under the box: no reskin
+        ("entei-plain.png", false, false),
+        ("entei-coal.png", true, false),
+        ("entei-galaxy.png", true, false),
+        ("entei-wave-tint.png", true, false),
+        ("mew-toxic.png", true, false),
+        ("phone-pikachu-shiny.png", false, false),
+        ("phone16-pichu-shiny.png", false, false),
+    ];
+    for (name, reskin, tab) in want {
+        let f = load(name);
+        let mute = find_mute(&f, None).expect(name);
+        let lay = Layout::new(mute, &calibrate(&f, mute).unwrap_or_default());
+        assert_eq!(vision::reskin_shown(&f, &lay), reskin, "{name}: reskin");
+        assert_eq!(vision::gradient_tab(&f, &lay).unwrap_or(false), tab, "{name}: gradient tab");
+        // a window scaled a little off: the game 8 px from where the layout puts it
+        for (dx, dy) in [(0, -8), (0, 8), (-8, 0), (8, 0)] {
+            let mut g = px::Frame::from_pixel(f.width(), f.height(), image::Rgb([0, 0, 0]));
+            image::imageops::overlay(&mut g, &f, dx, dy);
+            assert_eq!(vision::reskin_shown(&g, &lay), reskin, "{name} moved {dx}, {dy}: reskin");
+            assert_eq!(vision::gradient_tab(&g, &lay).unwrap_or(false), tab, "{name} moved {dx}, {dy}: gradient tab");
+        }
+    }
+}
+
+#[test]
+fn sees_the_games_white_dialog_box() {
+    // a save's messages, whatever they say ("Error. Your save did not save correctly." on a
+    // Windows screen with its taskbar), and the red arrow asking for a click
+    for name in ["save-done.png", "save-error.png"] {
+        let f = load(name);
+        let at = vision::dialog_box(&f).expect(name);
+        assert!((at.y / f.height() as f64 - 0.87).abs() < 0.05, "{name}: {at:?}");
+        assert!(vision::dialog_waiting(&f).is_some(), "{name}: arrow");
+    }
+    for name in ["menu-open.png", "bag-open.png", "quaxly-shiny.png", "fight-menu.png", "dewpider-mirage.png", "party-fainted.png"] {
+        assert!(vision::dialog_box(&load(name)).is_none(), "{name}");
+    }
+}
