@@ -10,7 +10,7 @@ use crate::reader::{self, find_tab, is_count, menu_button, menu_open, save_messa
 use crate::rules::{norm, same_word, Enc};
 use crate::store::Store;
 use crate::util::{clip, now, write_atomic};
-use crate::vision::{find_menu_tab, tab_look};
+use crate::vision::{self, find_menu_tab, tab_look};
 use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::sync::LazyLock;
@@ -18,7 +18,7 @@ use std::sync::LazyLock;
 static AFTER_ITEM: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)restored|recovered|effect|healed|was used|can't be used").unwrap());
 
-fn size_key(f: &Frame) -> String {
+pub(crate) fn size_key(f: &Frame) -> String {
     format!("{}x{}", f.width(), f.height())
 }
 
@@ -39,6 +39,31 @@ impl Hunt {
         spots.get(&size_key(f)).and_then(|s| s.get(name)).cloned()
     }
 
+    /// A cached point (the bag's tabs, a favorite's row, Use, a party card, a move) for this
+    /// screen size: clicked without reading anything, as the debug run found it.
+    pub(crate) fn spot(&mut self, f: &Frame, name: &str) -> Option<Pt> {
+        self.menu_spot(f, name).as_ref().and_then(as_pt)
+    }
+
+    /// A cached yes/no (a ball is a favorite) for this screen size.
+    pub(crate) fn spot_flag(&mut self, f: &Frame, name: &str) -> Option<bool> {
+        self.menu_spot(f, name).and_then(|v| v.as_bool())
+    }
+
+    /// Saves a spot or flag: over the old one in the debug run, otherwise only where there's none.
+    pub(crate) fn put_spot(&mut self, f: &Frame, name: &str, v: Value) {
+        let had = self.menu_spot(f, name).is_some();
+        if had && !self.learning {
+            return;
+        }
+        let spots = self.menu_spots.as_mut().unwrap();
+        let mine = spots.entry(size_key(f)).or_insert_with(|| Value::Object(Map::new()));
+        let Some(mine) = mine.as_object_mut() else { return };
+        mine.insert(name.into(), v);
+        let text = Value::Object(spots.clone()).to_string();
+        let _ = write_atomic(&self.c.store.path("menu.json"), text.as_bytes());
+    }
+
     /// MENU's tab (if it was read) and every item in the open MENU, for quick_menu.
     fn remember_menu(&mut self, f: &Frame, texts: &[TextHit], tab: Option<Pt>) {
         self.menu_spot(f, "menu"); // (what's saved, first)
@@ -53,7 +78,7 @@ impl Hunt {
         for t in texts {
             let n = norm(&t.text);
             if n == "bag" || n == "save" {
-                let at = menu_button(t.pt(), texts, false);
+                let at = menu_button(t.pt(), texts, f.height() as f64);
                 mine.insert(n, json!([at.x, at.y]));
             }
         }
@@ -140,7 +165,7 @@ impl Hunt {
                 (tab, tab_at) = (Some(t), now());
             }
         }
-        let end = now() + 20.0;
+        let end = now() + 45.0; // (ten messages to click through, each typing itself out)
         let (mut img, mut texts) = (None::<Frame>, Vec::new());
         while now() < end {
             self.nap(self.traits.poll)?;
@@ -156,7 +181,7 @@ impl Hunt {
                 }
                 let hit = texts.iter().find(|t| norm(&t.text) == "save").map(|t| t.pt());
                 if let Some(hit) = hit.filter(|_| menu_open(&texts)) {
-                    let at = menu_button(hit, &texts, tries > 0);
+                    let at = menu_button(hit, &texts, f.height() as f64);
                     self.trace(&format!("save: clicking Save at ({:.0}, {:.0})", at.x, at.y));
                     self.click(at)?;
                     self.remember_menu(&f, &texts, tab);
@@ -170,18 +195,26 @@ impl Hunt {
                     }
                 }
             } else if step == "message" {
-                if let Some(msg) = texts.iter().find(|t| save_message(&t.text)).cloned() {
+                let msg = texts.iter().find(|t| save_message(&t.text)).cloned();
+                if let Some(msg) = &msg {
                     if !shown {
                         self.trace(&format!("save: the game says \"{}\"", msg.text));
                     }
                     if let Some(w) = reader::save_wait(&msg.text) {
                         self.save_wait = w;
                     }
-                    // The text types itself out: a click while it's typing only finishes
-                    // it, so keep clicking until the box is gone.
                     saved = saved || msg.text.to_lowercase().contains("successful");
+                }
+                // The text types itself out: a click while it's typing only finishes it, and
+                // a save can say up to ten things in a row ("Error. Your save did not save
+                // correctly." and what to report): clicked until the white box is gone,
+                // whatever it says
+                if let Some(at) = vision::dialog_box(&f).or(msg.map(|m| m.pt())) {
+                    if !shown && texts.iter().all(|t| !save_message(&t.text)) {
+                        self.trace("save: the game's white box is up");
+                    }
                     shown = true;
-                    self.click(msg.pt())?;
+                    self.click(at)?;
                     self.nap(0.3)?;
                 } else if shown {
                     step = after; // the message was there and is gone now
@@ -192,7 +225,7 @@ impl Hunt {
                     step = "save";
                 }
             }
-            if (step == "close" || step == "closed") && texts.iter().any(|t| save_message(&t.text)) {
+            if (step == "close" || step == "closed") && (texts.iter().any(|t| save_message(&t.text)) || vision::dialog_box(&f).is_some()) {
                 // "Do not close the game until it says 'Save successful'" goes, then a
                 // moment later "Save successful…" comes up: that one's clicked away too
                 (after, step) = (step, "message");
@@ -282,7 +315,7 @@ impl Hunt {
                 continue;
             }
             if let Some(hit) = texts.iter().find(|t| norm(&t.text) == "bag").map(|t| t.pt()).filter(|_| menu_open(&texts)) {
-                let at = menu_button(hit, &texts, false);
+                let at = menu_button(hit, &texts, f.height() as f64);
                 self.trace(&format!("{why}: clicking Bag at ({:.0}, {:.0})", at.x, at.y));
                 self.click(at)?;
                 self.remember_menu(&f, &texts, tab);
@@ -302,6 +335,7 @@ impl Hunt {
         let split = lay.xy(layout::BAG_SPLIT, 0.0).x;
         let (mut seen, mut tabbed, end, mut texts): (Vec<(String, bool)>, bool, f64, Vec<TextHit>) =
             (Vec::new(), false, now() + 8.0, Vec::new());
+        let mut last: Option<(Frame, Vec<TextHit>)> = None;
         while now() < end {
             self.nap(self.traits.poll)?;
             let f = self.grab();
@@ -313,6 +347,7 @@ impl Hunt {
             if !tabbed {
                 if let Some(hit) = find_tab(&texts, tab, split, f.width()) {
                     self.click(hit.pt())?;
+                    self.put_spot(&f, &format!("bagtab:{tab}"), json!([hit.x, hit.y]));
                     tabbed = true;
                 }
                 continue;
@@ -321,8 +356,20 @@ impl Hunt {
                 continue; // the list isn't up yet
             }
             seen = favorite_rows(&f, &texts, items, split, lay);
+            last = Some((f.clone(), texts.clone()));
             if seen.iter().all(|s| s.1) || now() > end - 5.0 {
                 break;
+            }
+        }
+        // what the debug run learns: which are favorites, and where their rows are
+        if let Some((f, texts)) = last {
+            for (item, fav) in &seen {
+                self.put_spot(&f, &format!("fav:{item}"), json!(fav));
+                let top = texts.iter().filter(|t| norm(&t.text) == norm(item) && t.x < split)
+                    .min_by(|a, b| a.y.total_cmp(&b.y));
+                if let (true, Some(t)) = (*fav, top) {
+                    self.put_spot(&f, &format!("row:{tab}:{item}"), json!([t.x, t.y]));
+                }
             }
         }
         Ok(items.iter().map(|i| (i.clone(), seen.iter().any(|s| &s.0 == i && s.1))).collect())
@@ -395,9 +442,14 @@ impl Hunt {
     pub(crate) fn clear_leftovers(&mut self) -> R<bool> {
         let f = self.grab();
         let texts = self.screen_texts(&f);
-        if let Some(msg) = texts.iter().find(|t| save_message(&t.text)).map(|t| t.pt()) {
+        if let Some(msg) = texts.iter().find(|t| save_message(&t.text)).map(|t| t.pt()).or_else(|| vision::dialog_waiting(&f)) {
             self.click(msg)?;
             return Ok(true);
+        }
+        // a backpack or party screen left over a battle (it hides the battle: no encounter in
+        // sight for minutes), or yours fainted and "Choose your next Pokemon." waits
+        if reader::next_asked(&texts) || reader::party_up(&texts) || reader::bag_title(&texts).is_some() {
+            return self.close_screens(6.0);
         }
         if menu_open(&texts) {
             if let Some(tab) = find_menu_tab(&f, &texts) {
@@ -419,6 +471,13 @@ impl Hunt {
     /// its message clicked away. Each step to the debug channel, a picture with
     /// any that went wrong, a summary at the end. True if every step went right.
     pub(crate) fn debug_workflow(&mut self, enc: &Enc, f: &Frame, lay: &Layout) -> R<bool> {
+        self.learning = true; // every bag and move position seen is kept
+        let r = self.debug_workflow_inner(enc, f, lay);
+        self.learning = false;
+        r
+    }
+
+    fn debug_workflow_inner(&mut self, enc: &Enc, f: &Frame, lay: &Layout) -> R<bool> {
         let cfg = self.c.cfg.clone();
         let mut steps: Vec<(String, bool, String)> = Vec::new();
         let step = |h: &mut Hunt, steps: &mut Vec<(String, bool, String)>, name: &str, ok: bool, detail: &str, picture: Option<&Frame>| {
@@ -452,7 +511,7 @@ impl Hunt {
         let ball = Some(cfg.str("first_ball")).filter(|b| !b.is_empty()).unwrap_or_else(|| "Quick Ball".into());
         let mut lay = lay.clone();
         let battle = (|| -> R<()> {
-            let used = self.use_item(&lay, "Pokeballs", &ball, None, None, true)?;
+            let used = self.use_item(&lay, "Pokeballs", &ball, None, true)?;
             step(self, &mut steps, &format!("throwing a {ball}"), used.is_some(), "", None);
             let mut outcome = "turn";
             if used.is_some() {
@@ -489,12 +548,19 @@ impl Hunt {
         let opened = self.open_bag("debug")?;
         step(self, &mut steps, "MENU > Bag", opened, "", None);
         if opened {
+            // the balls' favorites, learned here: which of them go first (a Level Ball), and where
+            let mut balls: Vec<String> = ["level_ball", "first_ball", "awake_ball", "asleep_ball", "timer_ball", "new_ball"]
+                .iter().map(|k| cfg.str(k)).filter(|b| !b.is_empty()).collect();
+            balls.dedup();
+            let favs = self.favorites_in_bag(&lay, "Pokeballs", &balls)?;
+            let names: Vec<String> = favs.iter().filter(|b| b.1).map(|b| b.0.clone()).collect();
+            self.print(&format!("  debug: favorite balls: {}", if names.is_empty() { "none".into() } else { names.join(", ") }));
             for (name, fav) in self.favorites_in_bag(&lay, "Recovers", &[heal.clone(), pp.clone()])? {
                 step(self, &mut steps, &format!("{name} is a favorite"), fav,
                      if fav { "" } else { "favorite it in the bag (right click)" }, None);
             }
             for item in [&heal, &pp] {
-                let used = self.use_item(&lay, "Recovers", item, Some(&target), None, false)?;
+                let used = self.use_item(&lay, "Recovers", item, Some(&target), false)?;
                 let said = if used.is_some() { self.back_to_bag(8.0)? } else { String::new() };
                 let who = if target.is_empty() { "?" } else { &target };
                 step(self, &mut steps, &format!("a {item} on {who}"), used.is_some(), &said, None);

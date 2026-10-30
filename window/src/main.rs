@@ -77,6 +77,64 @@ fn site() -> String {
     env::var("HUNT_SITE").unwrap_or_else(|_| "https://poopihunt.xyz".into())
 }
 
+/// The private test updater's token is kept locally, never in the repository.
+/// On Windows: %LOCALAPPDATA%\Hunt\update-token.txt. HUNT_UPDATE_TOKEN can override it.
+fn private_update_token() -> Option<String> {
+    env::var("HUNT_UPDATE_TOKEN").ok()
+        .or_else(|| fs::read_to_string(engine::data_dir().join("update-token.txt")).ok())
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
+}
+
+/// Find the newest unpublished personal test release. The caller provides a read-only
+/// GitHub token; the payload includes the asset API URL and a mandatory SHA-256.
+fn private_update_info(token: &str, current: u64) -> Option<Value> {
+    let body = ureq::get("https://api.github.com/repos/gamblesouls-eng/PM-Hunter/releases?per_page=100")
+        .set("Authorization", &format!("Bearer {token}"))
+        .set("Accept", "application/vnd.github+json")
+        .set("X-GitHub-Api-Version", "2022-11-28")
+        .set("User-Agent", "Poopihunt private test updater")
+        .timeout(Duration::from_secs(15))
+        .call().ok()?.into_string().ok()?;
+    let releases: Vec<Value> = serde_json::from_str(&body).ok()?;
+    let mut newest: Option<(u64, Value)> = None;
+    for release in releases {
+        if release.get("draft").and_then(Value::as_bool) != Some(true)
+            || release.get("prerelease").and_then(Value::as_bool) != Some(true) {
+            continue;
+        }
+        let Some(tag) = release.get("tag_name").and_then(Value::as_str)
+            .and_then(|tag| tag.strip_prefix("rdp-private-test-")) else { continue };
+        let Some(version) = tag.parse::<u64>().ok() else { continue };
+        if version <= current { continue; }
+
+        let Some(asset) = release.get("assets").and_then(Value::as_array)
+            .and_then(|assets| assets.iter().find(|asset| {
+                asset.get("name").and_then(Value::as_str) == Some("PoopihuntSetup.exe")
+            })) else { continue };
+        let Some(url) = asset.get("url").and_then(Value::as_str) else { continue };
+        let checksum = asset.get("digest").and_then(Value::as_str)
+            .and_then(|digest| digest.strip_prefix("sha256:"))
+            .map(str::to_string)
+            .or_else(|| release.get("body").and_then(Value::as_str).and_then(|body| {
+                body.lines().find_map(|line| line.trim().strip_prefix("sha256:")
+                    .map(|value| value.trim().to_string()))
+            }));
+        let Some(sha256) = checksum.filter(|sha| sha.len() == 64
+            && sha.chars().all(|c| c.is_ascii_hexdigit())) else { continue };
+        let info = json!({
+            "version": version,
+            "file": "PoopihuntSetup.exe",
+            "sha256": sha256,
+            "download_url": url
+        });
+        if newest.as_ref().is_none_or(|(best, _)| version > *best) {
+            newest = Some((version, info));
+        }
+    }
+    newest.map(|(_, info)| info)
+}
+
 /// The pill's colors: black, or white while it shows a find.
 struct Look {
     fill: Color32,
@@ -678,17 +736,27 @@ impl Hunt {
     /// It's downloaded, installed, and Hunt starts again (the installer starts it).
     fn check_update(&self) {
         if version() == 0 {
-            return; // a build of one's own
+            return; // a development build
+        }
+        // RDP TEST builds only look at unpublished draft releases through GitHub's API.
+        // Never fall back to poopihunt.xyz, where a public update could overwrite this build.
+        let private = name() == "RDP TEST";
+        if private && private_update_token().is_none() {
+            return; // private channel has not been configured on this PC yet
         }
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            let info = ureq::get(&format!("{}/{}", site(), UPDATES.0))
-                .set("User-Agent", &format!("Hunt ({}, {})", UPDATES.2, name()))
-                .timeout(Duration::from_secs(15))
-                .call()
-                .ok()
-                .and_then(|r| r.into_string().ok())
-                .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+            let info = if private {
+                private_update_token().and_then(|token| private_update_info(&token, version()))
+            } else {
+                ureq::get(&format!("{}/{}", site(), UPDATES.0))
+                    .set("User-Agent", &format!("Hunt ({}, {})", UPDATES.2, name()))
+                    .timeout(Duration::from_secs(15))
+                    .call()
+                    .ok()
+                    .and_then(|r| r.into_string().ok())
+                    .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            };
             if let Some(Value::Object(info)) = info {
                 if info.get("version").and_then(Value::as_u64).unwrap_or(0) > version() {
                     let _ = tx.send(Msg::Update(info));
@@ -716,13 +784,21 @@ impl Hunt {
             let result = (|| -> Result<PathBuf, String> {
                 let file = info.get("file").and_then(Value::as_str).unwrap_or(UPDATES.1);
                 let number = info.get("version").and_then(Value::as_u64).unwrap_or(0);
+                let private_url = info.get("download_url").and_then(Value::as_str).map(str::to_string);
+                let url = private_url.clone().unwrap_or_else(|| format!("{}/{file}", site()));
                 let path = env::temp_dir().join(format!("{number}-{file}"));
                 let part = path.with_extension("part");
-                let resp = ureq::get(&format!("{}/{file}", site()))
+                let mut request = ureq::get(&url)
                     .set("User-Agent", &format!("Hunt ({}, {})", UPDATES.2, name()))
-                    .timeout(Duration::from_secs(300))
-                    .call()
-                    .map_err(|e| e.to_string())?;
+                    .timeout(Duration::from_secs(300));
+                if private_url.is_some() {
+                    let token = private_update_token()
+                        .ok_or_else(|| "private update token is missing".to_string())?;
+                    let authorization = format!("Bearer {token}");
+                    request = request.set("Authorization", &authorization)
+                        .set("Accept", "application/octet-stream");
+                }
+                let resp = request.call().map_err(|e| e.to_string())?;
                 let total: u64 = resp.header("Content-Length").and_then(|v| v.parse().ok()).unwrap_or(0);
                 let mut body = resp.into_reader();
                 let mut out = File::create(&part).map_err(|e| e.to_string())?;

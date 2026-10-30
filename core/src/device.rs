@@ -46,6 +46,10 @@ pub trait Device: Send + Sync {
     /// A finger dragged from one point to another over that long (phones).
     fn swipe(&self, _from: Pt, _to: Pt, _seconds: f64) {}
 
+    /// The mouse wheel turned over a spot, notches (up when positive; desktop: the bag's
+    /// list is scrolled with it, never searched).
+    fn wheel(&self, _at: Pt, _notches: i32) {}
+
     /// The mouse to a spot, without clicking (desktop; out of the way of buttons).
     fn move_pointer(&self, _at: Pt) {}
 
@@ -68,6 +72,11 @@ pub trait Device: Send + Sync {
 
     fn roblox_in_front(&self) -> bool;
     fn focus_roblox(&self);
+
+    /// Roblox has a window at all (false: closed, or crashed). True where that isn't known.
+    fn roblox_open(&self) -> bool {
+        true
+    }
 
     /// What floats over the game (the phone's ON / OFF button), in screenshot
     /// px: text read under it isn't the game's.

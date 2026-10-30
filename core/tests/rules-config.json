@@ -120,7 +120,6 @@
     "pp_item": "Max Elixir",
     "on_fail": "hold"
   },
-  "save_after_catch": true,
   "keepalive_seconds": 5,
   "status_every_minutes": 60,
   "quiet_alert_minutes": 3

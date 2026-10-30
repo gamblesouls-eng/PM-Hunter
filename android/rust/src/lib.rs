@@ -218,16 +218,13 @@ pub struct Hunter {
 impl Hunter {
     /// config: config.json's text; data_dir: the app's files (calibration.json,
     /// encounters.csv, menu.json); key: the phone's secret for the website
-    /// ("" for none: watching only); debug_webhook: the build's debug channel.
+    /// ("" for none: watching only), its log on the website too.
     #[uniffi::constructor]
     pub fn new(phone: Arc<dyn Phone>, config: String, data_dir: String, watch: bool, debug: bool, key: String,
-               build: String, debug_webhook: String) -> Result<Arc<Hunter>, HuntError> {
+               build: String) -> Result<Arc<Hunter>, HuntError> {
         let cfg = Config::parse(&config).map_err(|why| HuntError::Config { why })?;
-        let url = cfg.debug_webhook.clone().unwrap_or(debug_webhook);
-        // (the debug channel only when it's not your own webhook: your finds go there already)
-        let url = if url.trim() == cfg.webhook.trim() { String::new() } else { url };
         let label = phone.label();
-        let channel = DebugChannel::new(&url, &format!("{label} · {build}"));
+        let channel = DebugChannel::new(if watch { "" } else { &key }, &format!("{label} · {build}"));
         channel.set_header(&format!("Hunt {build} on {label}"));
         let opts = Options { watch, debug, window: true, build, key: if watch { String::new() } else { key },
                              ..Default::default() };

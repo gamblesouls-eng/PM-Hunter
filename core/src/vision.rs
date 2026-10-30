@@ -146,6 +146,82 @@ pub fn icons(f: &Frame, lay: &Layout) -> (bool, bool, bool) {
     (shiny, tint, owned)
 }
 
+/// A reskin's name is under the HP bar: the row right of the icons isn't all
+/// the box's gray (it is, without one), so Windows' text recognition missing it
+/// doesn't decide. Only lines of the box's gray count, down to its dark bottom
+/// edge: a window scaled a little off brings that edge or the gradient tab into
+/// the row, and they aren't a name.
+pub fn reskin_shown(f: &Frame, lay: &Layout) -> bool {
+    let gray = lay.color("box").unwrap_or(layout::BOX_GRAY);
+    let r = lay.boxed(layout::RESKIN_INK);
+    let pad = (8.0 * lay.v()).round() as i32;
+    let (mut lines, mut ink, mut inside) = (0usize, 0.0, false);
+    for y in r.t - pad..r.b + pad {
+        let off = share(f, IBox::new(r.l, y, r.r, y + 1), |c| !near(c, gray, 25));
+        if off < 0.4 {
+            (lines, ink, inside) = (lines + 1, ink + off, true);
+        } else if inside {
+            break; // the box's bottom edge
+        }
+    }
+    lines > 0 && ink / lines as f64 > 0.005
+}
+
+/// The gradient's tab hangs under the box, drawn with a thin dark outline: its
+/// bottom and a side are found (Some(true)), or not where the game around it is
+/// light enough to show one (Some(false)). None: too dark there to tell.
+pub fn gradient_tab(f: &Frame, lay: &Layout) -> Option<bool> {
+    let (left, right, bottom) = layout::TAB_EDGES;
+    let lum = |p: Pt| -> Option<i32> {
+        let (x, y) = (p.x.round() as i64, p.y.round() as i64);
+        (x >= 0 && y >= 0 && (x as u32) < f.width() && (y as u32) < f.height())
+            .then(|| px::at(f, x as usize, y as usize).iter().map(|&v| v as i32).max().unwrap())
+    };
+    // across a line at (x, y) (along: the line runs left to right): the darkest of a dozen
+    // px either way (a window scaled a little off) is well darker than 9 px out on both sides
+    let crosses = |x: f64, y: f64, along: bool| -> Option<bool> {
+        let at = |d: f64| if along { lay.xy(x, y + d) } else { lay.xy(x + d, y) };
+        let (d, dark) = (-12..=12).filter_map(|d| lum(at(d as f64)).map(|v| (d as f64, v))).min_by_key(|a| a.1)?;
+        let (a, b) = (lum(at(d - 9.0))?, lum(at(d + 9.0))?);
+        Some(dark + 25 < a.min(b))
+    };
+    let line = |pts: Vec<(f64, f64)>, along: bool| -> f64 {
+        let hits: Vec<bool> = pts.into_iter().filter_map(|(x, y)| crosses(x, y, along)).collect();
+        if hits.is_empty() { 0.0 } else { hits.iter().filter(|h| **h).count() as f64 / hits.len() as f64 }
+    };
+    let b = line((0..40).map(|i| (left as f64 + 15.0 + i as f64 * 9.0, bottom as f64)).collect(), true);
+    let side = |x: i32| line((0..8).map(|i| (x as f64, 494.0 + i as f64 * 4.0)).collect(), false);
+    if b >= 0.6 && side(left).max(side(right)) >= 0.6 {
+        return Some(true);
+    }
+    // under where it would be: light enough for a dark outline to stand out
+    let under = lay.boxf(left as f64, bottom as f64 + 6.0, right as f64, bottom as f64 + 16.0);
+    (share(f, under, |c| hi(c) > 70) > 0.5).then_some(false)
+}
+
+/// The game's white dialog box at the bottom (the save's messages: "Save successful",
+/// "Error. Your save did not save correctly." and the rest, up to ten of them): its
+/// middle, or None. Rows in the screen's lower part that are white nearly all
+/// the way across its middle.
+pub fn dialog_box(f: &Frame) -> Option<Pt> {
+    let (w, h) = (f.width() as i32, f.height() as i32);
+    let (l, r) = (w * 3 / 10, w * 7 / 10);
+    let rows: Vec<i32> = (h * 6 / 10..h)
+        .filter(|&y| share(f, IBox::new(l, y, r, y + 1), |c| lo(c) > 225) > 0.85)
+        .collect();
+    let (&top, &bottom) = (rows.first()?, rows.last()?);
+    (rows.len() as f64 > h as f64 * 0.04).then(|| Pt::new(w as f64 / 2.0, (top + bottom) as f64 / 2.0))
+}
+
+/// The white dialog box is done typing: its red arrow (bottom right) asks for a
+/// click. Something white on the ground isn't clicked for one.
+pub fn dialog_waiting(f: &Frame) -> Option<Pt> {
+    let at = dialog_box(f)?;
+    let (w, h) = (f.width() as i32, f.height() as i32);
+    let corner = IBox::new(w * 6 / 10, at.y as i32, w * 9 / 10, h);
+    (mask(f, corner, red).blobs().iter().any(|b| b.b.w() >= 4 && b.b.h() >= 4)).then_some(at)
+}
+
 /// How much of the screen isn't black, in %: 0 means the screenshot is blank.
 pub fn brightness(f: &Frame) -> u32 {
     let p = f.as_raw();
@@ -261,4 +337,81 @@ pub fn sprite(f: &Frame, lay: &Layout) -> Frame {
         let y = ((o.y + (j as f64 + 0.5) * k) as i64).clamp(0, h - 1);
         image::Rgb(at(f, x as usize, y as usize))
     })
+}
+
+/// Your Pokemon's HP, 0..1, from how much of its HP bar is colored (green, yellow or red:
+/// the empty part is dark or gray). None when the box isn't in sight (the bar's surround
+/// isn't the box's gray). No text read: Windows read "412 / 415" as 31%, 9400% or nothing.
+pub fn hp_bar(f: &Frame, lay: &Layout) -> Option<f64> {
+    let bar = lay.boxed(layout::HP_BAR);
+    let (x0, y0, x1, y1) = clip(f, bar);
+    if x1 - x0 < 20 || y1 <= y0 {
+        return None;
+    }
+    let gray = |c: Rgb| hi(c) - lo(c) < 14 && (105..=180).contains(&hi(c));
+    let pad = (4.0 * lay.v()).max(2.0) as i32;
+    let above = IBox::new(bar.l, bar.t - 18 * pad / 4 - pad, bar.r, bar.t - 18 * pad / 4);
+    let below = IBox::new(bar.l, bar.b + 9 * pad / 4, bar.r, bar.b + 9 * pad / 4 + pad);
+    if share(f, above, gray) < 0.6 && share(f, below, gray) < 0.6 {
+        return None;
+    }
+    let colored = |c: Rgb| hi(c) > 70 && hi(c) - lo(c) > 40;
+    let dark = |c: Rgb| hi(c) < 90; // the bar's empty part
+    // three rows through the bar; each its colored share. A bar's every pixel is colored or
+    // dark: anything else (the box's gray) and the layout is off the bar, not a 0% read.
+    let mut rows = Vec::new();
+    for k in [0.3, 0.5, 0.7] {
+        let y = (y0 as f64 + k * (y1 - y0) as f64) as i32;
+        let row = IBox::new(x0 as i32, y, x1 as i32, y + 1);
+        if share(f, row, |c| !colored(c) && !dark(c)) > 0.12 {
+            return None;
+        }
+        rows.push(share(f, row, colored));
+    }
+    let mut sorted = rows.clone();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    Some(sorted[1])
+}
+
+/// The Pokemon Party screen's cards, in party order (the left column, top down,
+/// then the right): each card's box and whether it fainted (a dark red card).
+/// In battle the first is the Pokemon out now.
+pub fn party_cards(f: &Frame) -> Vec<(IBox, bool)> {
+    let (w, h) = (f.width() as i32, f.height() as i32);
+    let alive = |c: Rgb| near(c, [180, 223, 255], 28);
+    let fainted = |c: Rgb| near(c, [87, 0, 0], 28);
+    let mut cards: Vec<(IBox, bool)> = Vec::new();
+    for (test, out) in [(&alive as &dyn Fn(Rgb) -> bool, false), (&fainted as &dyn Fn(Rgb) -> bool, true)] {
+        for b in mask(f, px::whole(f), test).blobs() {
+            let (bw, bh) = (b.b.w(), b.b.h());
+            let r = bw as f64 / bh.max(1) as f64;
+            if bw > w / 8 && bh > h / 14 && (2.0..5.0).contains(&r) && b.size as f64 > 0.3 * (bw * bh) as f64 {
+                cards.push((b.b, out));
+            }
+        }
+    }
+    // columns: cards whose left edges are close together
+    cards.sort_by(|a, b| a.0.l.cmp(&b.0.l));
+    let mut columns: Vec<Vec<(IBox, bool)>> = Vec::new();
+    for c in cards {
+        match columns.last_mut() {
+            Some(col) if (c.0.l - col[0].0.l).abs() < w / 10 => col.push(c),
+            _ => columns.push(vec![c]),
+        }
+    }
+    columns.into_iter().flat_map(|mut col| {
+        col.sort_by(|a, b| a.0.t.cmp(&b.0.t));
+        col
+    }).collect()
+}
+
+/// The backpack's Close button: the red pill right of the "Backpack" title, on its row
+/// (found by its color: the word is read as "C", "e", "lose" on some PCs).
+pub fn bag_close(f: &Frame, title: Pt) -> Option<Pt> {
+    let (w, h) = (f.width() as i32, f.height() as i32);
+    let band = IBox::new(title.x as i32, (title.y as i32 - h / 12).max(0), w, (title.y as i32 + h / 12).min(h));
+    mask(f, band, |c| c[0] > 215 && (35..=120).contains(&c[1]) && (25..=115).contains(&c[2])).blobs().into_iter()
+        .filter(|b| b.b.w() > w / 40 && b.b.h() > h / 80 && b.b.w() > b.b.h())
+        .max_by_key(|b| b.size)
+        .map(|b| b.b.center())
 }

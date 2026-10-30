@@ -21,7 +21,7 @@ use windows::Win32::UI::HiDpi::{GetDpiForSystem, SetProcessDpiAwarenessContext, 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS,
     KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MAPVK_VK_TO_VSC, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
-    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEINPUT, MOUSE_EVENT_FLAGS,
+    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, MOUSE_EVENT_FLAGS,
     VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -127,6 +127,21 @@ pub fn click(at: Pt, right: bool) {
     pause(40);
     send(&[mouse(if right { MOUSEEVENTF_RIGHTUP } else { MOUSEEVENTF_LEFTUP }, 0, 0)]);
     pause(30);
+}
+
+/// The wheel over at, a notch at a time (Roblox scrolls a list under the mouse).
+pub fn wheel(at: Pt, notches: i32) {
+    move_to(at);
+    nudge(1, 0);
+    nudge(-1, 0);
+    pause(40);
+    for _ in 0..notches.abs() {
+        let delta = if notches > 0 { 120 } else { -120 };
+        let mut i = mouse(MOUSEEVENTF_WHEEL, 0, 0);
+        i.Anonymous.mi.mouseData = delta as u32;
+        send(&[i]);
+        pause(25);
+    }
 }
 
 pub fn pointer() -> Pt {
@@ -238,6 +253,11 @@ fn windows() -> Vec<HWND> {
 /// Roblox's player window (titled just "Roblox"; a browser on roblox.com has more in its title) is in front.
 pub fn roblox_in_front() -> bool {
     title(unsafe { GetForegroundWindow() }) == "Roblox"
+}
+
+/// Roblox's player window is there (minimized or not): false once it's closed or crashed.
+pub fn roblox_open() -> bool {
+    windows().into_iter().any(|h| title(h) == "Roblox")
 }
 
 pub fn focus_roblox() {

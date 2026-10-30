@@ -27,6 +27,7 @@ pub const BAG: Pt = Pt::new(1206.0, 1070.0);
 pub const FIGHT: Pt = Pt::new(480.0, 1070.0);
 pub const MSG: IBox = IBox::new(300, 885, 1750, 1020); // battle text ("What should Clodsire do?")
 pub const PLAYER_BOX: IBox = IBox::new(1168, 685, 1680, 870); // your Pokemon's box, HP "350 / 376"
+pub const HP_BAR: IBox = IBox::new(1353, 784, 1655, 806); // inside your Pokemon's HP bar (its outline left out)
 pub const BAG_SPLIT: f64 = 1100.0; // bag rows' names are left of this, the search box right
 pub const BAG_TAG: (f64, f64) = (1320.0, 1380.0); // across: inside a bag row's count tag, left of its "x985"
 pub const AFK_SPOT: Pt = Pt::new(150.0, 800.0); // black margin left of the game, below the chat window
@@ -36,6 +37,8 @@ pub const IDLE_SPOT: Pt = Pt::new(1550.0, 960.0); // empty right end of the "Wha
 pub const NAME_ROW: IBox = IBox::new(BOX.l + 15, BOX.t + 15, BOX.l + 320, BOX.t + 90); // "Mew", left of the level
 pub const RESKIN_ROW: IBox = IBox::new(BOX.l + 40, HP_BAR_END, BOX.r - 20, BOX_END); // INFERNO, under the HP bar
 pub const GRADIENT_TAB: IBox = IBox::new(BOX.l + 60, BOX_END, BOX.r - 60, BOX.b); // Mirage, in many colors
+pub const RESKIN_INK: IBox = IBox::new(480, 442, 862, 483); // the reskin row right of the icons: plain gray without one
+pub const TAB_EDGES: (i32, i32, i32) = (429, 824, 530); // the gradient tab's dark outline: left, right, bottom
 
 /// Found on screen to calibrate, where the samples have them.
 pub const ANCHORS: [(&str, IBox); 5] = [

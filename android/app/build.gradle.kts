@@ -1,12 +1,5 @@
-import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 import java.util.Date
-
-// The debug channel's webhook comes from secrets.json (at the repository's top), which isn't in the
-// repository; without it the app reports nowhere until its config says "debug_webhook".
-val secrets = rootProject.file("../secrets.json").takeIf { it.exists() }
-    ?.let { JsonSlurper().parse(it) as Map<*, *> } ?: emptyMap<String, Any>()
-val debugWebhook = secrets["android_debug_webhook"] as String? ?: ""
 
 plugins {
     id("com.android.application")
@@ -37,7 +30,6 @@ android {
         versionName = SimpleDateFormat("d MMM HH:mm").format(Date())
         // every phone of the last years: half the download of all four kinds
         ndk { abiFilters += "arm64-v8a" }
-        buildConfigField("String", "DEBUG_WEBHOOK", "\"$debugWebhook\"")
     }
     buildFeatures { buildConfig = true }
 

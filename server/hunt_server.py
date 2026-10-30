@@ -15,6 +15,11 @@ to; a device can log every browser out of itself.
 Screenshots and battle state are kept in memory only; the database holds
 devices, codes (hashed) and sessions (hashed).
 
+Logs: each device sends its hunt's log (every line, each encounter's reads, the
+pictures of what went wrong) with its key, kept LOG_DAYS days. Only admins read
+them, on /app/logs/: a browser logged in to one of admins.json's devices (next
+to the database: ["device id", ...]).
+
     python hunt_server.py --port 8791 --db hunt.db
 """
 import argparse
@@ -23,6 +28,7 @@ import base64
 import collections
 import hashlib
 import json
+import os
 import re
 import secrets
 import sqlite3
@@ -47,6 +53,13 @@ SPRITES = {  # the battle page's pictures: the Gen 5 sprites the game itself dra
     "back": (SHOWDOWN + "sprites/gen5-back/{}.png",),
     "item": (ITEMS + "{}.png",),  # bag icons: timer-ball, full-restore
 }
+LOG_DAYS = 7
+LOG_LINES = 300_000      # per device at most (a busy PC writes ~15000 a day)
+LOG_SHOTS = 400          # pictures per device at most
+MAX_LOG = 400_000        # bytes in one send: 500 lines
+MAX_LOG_SHOT = 900_000   # bytes: a JPEG up to 600 kB, in base64
+LOG_KINDS = {"line", "problem", "detail", "note"}
+WEBHOOK = re.compile(r"(?i)https?://[\w.]*discord(app)?\.com/api/webhooks/[\w/-]*")  # never kept
 HISTORY = 50             # encounters kept per device (memory only), for the page's ENCOUNTERS
 MAX_SPRITE = 40_000      # bytes: the 96 x 96 sprite area a device samples from the game
 
@@ -103,8 +116,19 @@ class Hub:
             CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, created REAL, expires REAL);
             CREATE TABLE IF NOT EXISTS session_devices (token_hash TEXT, device TEXT,
                 PRIMARY KEY (token_hash, device));
+            CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY, device TEXT, run TEXT, who TEXT,
+                at REAL, kind TEXT, text TEXT, shot TEXT);
+            CREATE INDEX IF NOT EXISTS logs_device ON logs (device, id);
+            CREATE INDEX IF NOT EXISTS logs_at ON logs (at);
         """)
         self.db.commit()
+        self.data = os.path.dirname(os.path.abspath(db_path))
+        self.shots_dir = os.path.join(self.data, "logshots")
+        self.admins_file = os.path.join(self.data, "admins.json")
+        self.admins_read = (None, set())  # (mtime, device ids)
+        self.log_sends = Limit(40, 60)    # per device
+        self.log_shots = Limit(60, 3600)
+        self.log_tidied = 0.0
         self.live = {}           # device id -> Live
         self.watchers = {}       # device id -> set of asyncio.Queue (browsers' event streams)
         self.new_devices = Limit(20, 3600)
@@ -192,11 +216,62 @@ class Hub:
             if q.qsize() < 50:
                 q.put_nowait(msg)
 
+    # ------------------------------------------------------------ logs
+
+    def admins(self):
+        try:
+            mtime = os.path.getmtime(self.admins_file)
+        except OSError:
+            return set()
+        if self.admins_read[0] != mtime:
+            try:
+                with open(self.admins_file) as f:
+                    ids = json.load(f)
+                self.admins_read = (mtime, {str(i) for i in ids} if isinstance(ids, list) else set())
+            except (OSError, ValueError):
+                self.admins_read = (mtime, set())
+        return self.admins_read[1]
+
+    def admin(self, request):
+        """A browser logged in to an admin's device; 401 / 403 otherwise."""
+        _, devices = self.session_devices(request)
+        if not self.admins() & set(devices):
+            raise web.HTTPForbidden(text="not an admin")
+
+    def shot_path(self, device, name):
+        return os.path.join(self.shots_dir, device, name)
+
+    def drop_logs(self, where, args):
+        for device, shot in self.db.execute(f"SELECT device, shot FROM logs WHERE shot != '' AND {where}", args).fetchall():
+            try:
+                os.remove(self.shot_path(device, shot))
+            except OSError:
+                pass
+        self.db.execute(f"DELETE FROM logs WHERE {where}", args)
+
+    def tidy_logs(self):
+        """Older than LOG_DAYS, and past each device's share, go."""
+        self.drop_logs("at < ?", (time.time() - LOG_DAYS * 86400,))
+        for device, n in self.db.execute("SELECT device, COUNT(*) FROM logs GROUP BY device").fetchall():
+            if n > LOG_LINES:
+                cut = self.db.execute("SELECT id FROM logs WHERE device = ? ORDER BY id DESC LIMIT 1 OFFSET ?",
+                                      (device, LOG_LINES)).fetchone()[0]
+                self.drop_logs("device = ? AND id <= ?", (device, cut))
+            shots = self.db.execute("SELECT COUNT(*) FROM logs WHERE device = ? AND shot != ''", (device,)).fetchone()[0]
+            if shots > LOG_SHOTS:
+                cut = self.db.execute("SELECT id FROM logs WHERE device = ? AND shot != '' ORDER BY id DESC LIMIT 1 OFFSET ?",
+                                      (device, LOG_SHOTS)).fetchone()[0]
+                self.drop_logs("device = ? AND shot != '' AND id <= ?", (device, cut))
+        self.db.commit()
+
     def tidy(self):
         t = time.time()
         self.db.execute("DELETE FROM sessions WHERE expires < ?", (t,))
         self.db.execute("DELETE FROM session_devices WHERE token_hash NOT IN (SELECT token_hash FROM sessions)")
         self.db.commit()
+        if t - self.log_tidied > 600:
+            self.log_tidied = t
+            self.tidy_logs()
 
 
 class Showdown:
@@ -386,6 +461,68 @@ async def device_logout(request):
     return web.json_response({})
 
 
+def log_text(s, n):
+    return WEBHOOK.sub("[webhook]", str(s))[:n]
+
+
+def log_at(v):
+    """A device's time (ms) for a line, or now if it's far off (a wrong clock)."""
+    t = v / 1000 if isinstance(v, (int, float)) else 0
+    return t if abs(t - time.time()) < 3 * 86400 else time.time()
+
+
+async def device_log(request):
+    """Lines of the hunt's log: {"run", "who", "lines": [[ms, kind, text], ...]}."""
+    hub = request.app["hub"]
+    device = hub.device_for(request)
+    if not hub.log_sends.ok(device):
+        raise web.HTTPTooManyRequests(text="slow down")
+    data = await body(request, MAX_LOG)
+    lines = data.get("lines")
+    if not isinstance(lines, list) or len(lines) > 500:
+        raise web.HTTPBadRequest(text="up to 500 lines")
+    run, who = log_text(data.get("run", ""), 16), log_text(data.get("who", ""), 120)
+    rows = []
+    for line in lines:
+        if not (isinstance(line, list) and len(line) == 3 and line[1] in LOG_KINDS):
+            raise web.HTTPBadRequest(text="a line is [ms, kind, text]")
+        rows.append((device, run, who, log_at(line[0]), line[1], log_text(line[2], 2000), ""))
+    # a batch sent again (its answer lost on the way back, so the Hunt kept it to resend):
+    # the lines already here aren't added twice
+    if rows:
+        ats = [r[3] for r in rows]
+        have = set(hub.db.execute("SELECT at, kind, text FROM logs WHERE device = ? AND run = ? AND at BETWEEN ? AND ?",
+                                  (device, run, min(ats), max(ats))).fetchall())
+        rows = [r for r in rows if (r[3], r[4], r[5]) not in have]
+    hub.db.executemany("INSERT INTO logs (device, run, who, at, kind, text, shot) VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+    hub.db.commit()
+    return web.json_response({})
+
+
+async def device_log_shot(request):
+    """A picture for the log: {"run", "who", "at", "caption", "jpg": base64}."""
+    hub = request.app["hub"]
+    device = hub.device_for(request)
+    if not hub.log_shots.ok(device):
+        raise web.HTTPTooManyRequests(text="slow down")
+    data = await body(request, MAX_LOG_SHOT)
+    try:
+        jpg = base64.b64decode(str(data.get("jpg", "")), validate=True)
+    except ValueError:
+        raise web.HTTPBadRequest(text="not base64")
+    if len(jpg) > MAX_SHOT or not jpg.startswith(b"\xff\xd8"):
+        raise web.HTTPBadRequest(text="a JPEG up to 600 kB")
+    name = secrets.token_hex(8) + ".jpg"
+    os.makedirs(os.path.join(hub.shots_dir, device), exist_ok=True)
+    with open(hub.shot_path(device, name), "wb") as f:
+        f.write(jpg)
+    hub.db.execute("INSERT INTO logs (device, run, who, at, kind, text, shot) VALUES (?, ?, ?, ?, 'shot', ?, ?)",
+                   (device, log_text(data.get("run", ""), 16), log_text(data.get("who", ""), 120), log_at(data.get("at")),
+                    log_text(data.get("caption", ""), 300), name))
+    hub.db.commit()
+    return web.json_response({})
+
+
 # ---------------------------------------------------------------- logging in
 
 async def login_code(request):
@@ -551,6 +688,61 @@ async def move_info(request):
     return web.json_response(info, headers={"Cache-Control": "private, max-age=604800"})
 
 
+# ---------------------------------------------------------------- the logs page (admins)
+
+async def logs_devices(request):
+    """Every device, newest seen first, with how much it's logged and its last problem."""
+    hub = request.app["hub"]
+    hub.admin(request)
+    stats = {d: (n, p) for d, n, p in hub.db.execute(
+        "SELECT device, COUNT(*), MAX(CASE WHEN kind = 'problem' OR kind = 'shot' THEN at END) FROM logs GROUP BY device")}
+    out = []
+    for device, label, kind, build, seen in hub.db.execute(
+            "SELECT id, label, kind, build, seen FROM devices ORDER BY seen DESC"):
+        n, problem = stats.get(device, (0, None))
+        out.append({"id": device, "label": label, "kind": kind, "build": build, "seen": seen,
+                    "online": hub.dev(device).online if device in hub.live else False,
+                    "lines": n, "problem": problem})
+    return web.json_response({"devices": out})
+
+
+async def logs_lines(request):
+    """A device's log, newest first: ?before=id (older than), q= (text in it), problems=1
+    (what went wrong, pictures, notes), limit= (500 at most)."""
+    hub = request.app["hub"]
+    hub.admin(request)
+    device = request.match_info["device"]
+    q = request.query
+    where, args = ["device = ?"], [device]
+    if q.get("before", "").isdigit():
+        where.append("id < ?")
+        args.append(int(q["before"]))
+    if q.get("q"):
+        where.append("text LIKE ? ESCAPE '\\'")
+        args.append("%" + re.sub(r"([%_\\])", r"\\\1", q["q"][:100]) + "%")
+    if q.get("problems") == "1":
+        where.append("kind IN ('problem', 'shot', 'note')")
+    limit = min(int(q["limit"]) if q.get("limit", "").isdigit() else 300, 500)
+    rows = hub.db.execute(f"SELECT id, run, who, at, kind, text, shot FROM logs WHERE {' AND '.join(where)} "
+                          "ORDER BY id DESC LIMIT ?", (*args, limit)).fetchall()
+    return web.json_response({"lines": [{"id": i, "run": r, "who": w, "at": a, "kind": k, "text": t, "shot": s}
+                                        for i, r, w, a, k, t, s in rows]})
+
+
+async def logs_shot(request):
+    hub = request.app["hub"]
+    hub.admin(request)
+    device, name = request.match_info["device"], request.match_info["name"]
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", device) or not re.fullmatch(r"[0-9a-f]{16}\.jpg", name):
+        raise web.HTTPNotFound(text="no such picture")
+    try:
+        with open(hub.shot_path(device, name), "rb") as f:
+            jpg = f.read()
+    except OSError:
+        raise web.HTTPNotFound(text="no such picture")
+    return web.Response(body=jpg, content_type="image/jpeg", headers={"Cache-Control": "private, max-age=604800"})
+
+
 # ---------------------------------------------------------------- app
 
 @web.middleware
@@ -561,7 +753,7 @@ async def no_store(request, handler):
 
 
 def make_app(db_path, secure=True):
-    app = web.Application(middlewares=[no_store], client_max_size=MAX_SHOT + 1024)
+    app = web.Application(middlewares=[no_store], client_max_size=MAX_LOG_SHOT + 1024)
     app["hub"] = Hub(db_path)
     app["secure"] = secure
     app["showdown"] = Showdown()
@@ -574,6 +766,11 @@ def make_app(db_path, secure=True):
         web.get("/api/device/poll", device_poll),
         web.post("/api/device/code", device_code),
         web.post("/api/device/logout", device_logout),
+        web.post("/api/device/log", device_log),
+        web.post("/api/device/log/shot", device_log_shot),
+        web.get("/api/logs/devices", logs_devices),
+        web.get("/api/logs/{device}", logs_lines),
+        web.get("/api/logs/{device}/shot/{name}", logs_shot),
         web.post("/api/login", login_code),
         web.post("/api/logout", logout),
         web.get("/api/me", me),
@@ -619,5 +816,6 @@ if __name__ == "__main__":
     if a.static:
         app.router.add_get("/", lambda r: web.HTTPFound("/app/"))
         app.router.add_get("/app/", lambda r: web.FileResponse(f"{a.static}/app/index.html"))
+        app.router.add_get("/app/logs/", lambda r: web.FileResponse(f"{a.static}/app/logs/index.html"))
         app.router.add_static("/", a.static)
     web.run_app(app, host=a.host, port=a.port, access_log=None)

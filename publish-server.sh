@@ -1,6 +1,6 @@
 #!/bin/zsh
-# Publishes the website on poopihunt.xyz: the API (server/hunt_server.py) and
-# the battle page (site/app/, with its fonts). Runs as the poopihunt user, in its own folder
+# Publishes the website on poopihunt.xyz: the API (server/hunt_server.py), the
+# battle page (site/app/, with its fonts) and the admins' logs page (site/app/logs/). Runs as the poopihunt user, in its own folder
 # on the stingray server; nothing of stingray-digital.online (relay) is touched.
 #   ./publish-server.sh          update the API and the page
 #   ./publish-server.sh --setup  the first time: folders, Python, the service,
@@ -31,12 +31,13 @@ if [[ $1 == --setup ]]; then
 fi
 
 scp -q -i $KEY server/hunt_server.py $SERVER:$BASE/api/hunt_server.py
-ssh_ "install -d -o poopihunt -g poopihunt -m 755 $BASE/public/app/fonts"
+ssh_ "install -d -o poopihunt -g poopihunt -m 755 $BASE/public/app/fonts $BASE/public/app/logs"
 scp -q -i $KEY site/app/index.html site/app/manifest.json site/app/icon-*.png $SERVER:$BASE/public/app/
 scp -q -i $KEY site/app/fonts/*.woff2 $SERVER:$BASE/public/app/fonts/
+scp -q -i $KEY site/app/logs/index.html $SERVER:$BASE/public/app/logs/
 ssh_ "set -e
-  chown poopihunt:poopihunt $BASE/api/hunt_server.py $BASE/public/app/index.html $BASE/public/app/manifest.json $BASE/public/app/icon-*.png $BASE/public/app/fonts/*
-  chmod 644 $BASE/api/hunt_server.py $BASE/public/app/index.html $BASE/public/app/manifest.json $BASE/public/app/icon-*.png $BASE/public/app/fonts/*
+  chown poopihunt:poopihunt $BASE/api/hunt_server.py $BASE/public/app/index.html $BASE/public/app/manifest.json $BASE/public/app/icon-*.png $BASE/public/app/fonts/* $BASE/public/app/logs/index.html
+  chmod 644 $BASE/api/hunt_server.py $BASE/public/app/index.html $BASE/public/app/manifest.json $BASE/public/app/icon-*.png $BASE/public/app/fonts/* $BASE/public/app/logs/index.html
   systemctl restart poopihunt-api
   sleep 1
   systemctl is-active poopihunt-api"

@@ -51,6 +51,7 @@ extern "C" {
     fn CGEventGetLocation(event: Ref) -> CGPoint;
     fn CGEventCreateMouseEvent(source: Ref, kind: u32, at: CGPoint, button: u32) -> Ref;
     fn CGEventCreateKeyboardEvent(source: Ref, key: u16, down: bool) -> Ref;
+    fn CGEventCreateScrollWheelEvent2(source: Ref, units: u32, count: u32, wheel1: i32, wheel2: i32, wheel3: i32) -> Ref;
     fn CGEventKeyboardSetUnicodeString(event: Ref, len: usize, chars: *const u16);
     fn CGEventSetFlags(event: Ref, flags: u64);
     fn CGEventPost(tap: u32, event: Ref);
@@ -221,6 +222,22 @@ pub fn click(at: Pt, right: bool) {
 
 pub fn move_to(at: Pt) {
     post_mouse(MOUSE_MOVED, points(at), 0);
+}
+
+/// The wheel over at, a line (a notch) at a time (Roblox scrolls a list under the mouse).
+pub fn wheel(at: Pt, notches: i32) {
+    move_to(at);
+    pause(40);
+    for _ in 0..notches.abs() {
+        unsafe {
+            let e = CGEventCreateScrollWheelEvent2(std::ptr::null_mut(), 1, 1, notches.signum(), 0, 0);
+            if !e.is_null() {
+                CGEventPost(HID_TAP, e);
+                CFRelease(e);
+            }
+        }
+        pause(25);
+    }
 }
 
 pub fn pointer() -> Pt {

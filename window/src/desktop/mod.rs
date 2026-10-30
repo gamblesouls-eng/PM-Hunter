@@ -108,6 +108,10 @@ impl Device for Desktop {
         os::move_to(at);
     }
 
+    fn wheel(&self, at: Pt, notches: i32) {
+        os::wheel(at, notches);
+    }
+
     fn pointer(&self) -> Option<Pt> {
         Some(os::pointer())
     }
@@ -123,6 +127,13 @@ impl Device for Desktop {
 
     fn roblox_in_front(&self) -> bool {
         os::roblox_in_front()
+    }
+
+    fn roblox_open(&self) -> bool {
+        #[cfg(windows)]
+        return os::roblox_open();
+        #[cfg(not(windows))]
+        return true;
     }
 
     fn focus_roblox(&self) {

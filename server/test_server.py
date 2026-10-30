@@ -4,8 +4,10 @@
     python server/test_server.py
 """
 import asyncio
+import json
 import os
 import secrets
+import shutil
 import sys
 import tempfile
 
@@ -21,7 +23,8 @@ async def browser(server):
 
 
 async def main():
-    db = tempfile.mktemp(suffix=".db")
+    folder = tempfile.mkdtemp()
+    db = os.path.join(folder, "hunt.db")
     app = hunt_server.make_app(db, secure=False)
     server = TestServer(app)
     await server.start_server()
@@ -116,6 +119,48 @@ async def main():
     assert [(e["count"], e["species"], e["shiny"]) for e in hist] == [(5, "Marill", True), (4, "Sentret", False)], hist
     assert (await them.get(f"/api/devices/{device_id}/history")).status == 404
 
+    # the hunt's log: lines and pictures with the device's key; webhooks never kept
+    hook = "https://discord.com/api/webhooks/123456/abcDEF-gh"
+    lines = [[1000 * hunt_server.time.time(), "line", f"#{n} Zubat Lv50  run"] for n in range(3)]
+    lines += [[0, "detail", "    reads: Zubat Lv50 (reskin DOODLE) / Zubat Lv50 (reskin DOODLE)"],
+              [None, "problem", f"couldn't post to Discord: {hook}: status 404"]]
+    assert (await mine.post("/api/device/log", json={"run": "ab12", "who": "Windows 11 · 1", "lines": lines})).status == 200
+    assert (await mine.post("/api/device/log", json={"lines": [[0, "secret", "x"]]})).status == 400
+    assert (await mine.post("/api/device/log", json={"lines": [[0, "line", "x"]] * 501})).status == 400
+    assert (await anon.post("/api/device/log", json={"lines": []})).status == 401
+    shot_jpg = b"\xff\xd8" + b"1" * 100
+    assert (await mine.post("/api/device/log/shot", json={"run": "ab12", "caption": "stuck", "at": 0,
+                                                           "jpg": base64.b64encode(shot_jpg).decode()})).status == 200
+    assert (await mine.post("/api/device/log/shot", json={"jpg": base64.b64encode(b"<html>").decode()})).status == 400
+    # read by admins only: a browser logged in to a device in admins.json
+    assert (await anon.get("/api/logs/devices")).status == 401
+    assert (await me.get("/api/logs/devices")).status == 403
+    with open(os.path.join(folder, "admins.json"), "w") as f:
+        json.dump([device_id], f)
+    assert (await them.get("/api/logs/devices")).status == 403
+    assert (await them.get(f"/api/logs/{device_id}")).status == 403
+    devs = (await (await me.get("/api/logs/devices")).json())["devices"]
+    assert [(d["id"], d["lines"]) for d in devs if d["lines"]] == [(device_id, 6)], devs
+    got = (await (await me.get(f"/api/logs/{device_id}")).json())["lines"]
+    assert [g["kind"] for g in got] == ["shot", "problem", "detail", "line", "line", "line"], got
+    assert hook not in json.dumps(got) and "[webhook]: status 404" in got[1]["text"], got[1]
+    assert got[0]["who"] == "" and got[1]["who"] == "Windows 11 · 1"
+    assert [g["text"] for g in (await (await me.get(f"/api/logs/{device_id}?q=%231 Z")).json())["lines"]] == ["#1 Zubat Lv50  run"]
+    assert (await (await me.get(f"/api/logs/{device_id}?q=100%25")).json())["lines"] == []  # % is a %
+    assert [g["kind"] for g in (await (await me.get(f"/api/logs/{device_id}?problems=1")).json())["lines"]] == ["shot", "problem"]
+    older = (await (await me.get(f"/api/logs/{device_id}?before={got[2]['id']}&limit=2")).json())["lines"]
+    assert [g["id"] for g in older] == [got[3]["id"], got[4]["id"]], older
+    url = f"/api/logs/{device_id}/shot/{got[0]['shot']}"
+    assert await (await me.get(url)).read() == shot_jpg
+    assert (await them.get(url)).status == 403
+    assert (await me.get(f"/api/logs/{device_id}/shot/..%2F..%2Fhunt.db")).status == 404
+    # a week on, gone (the picture too)
+    hub = app["hub"]
+    hub.db.execute("UPDATE logs SET at = at - 8 * 86400 WHERE kind != 'line'")
+    hub.tidy_logs()
+    assert [g["kind"] for g in (await (await me.get(f"/api/logs/{device_id}")).json())["lines"]] == ["line"] * 3
+    assert (await me.get(url)).status == 404
+
     # a login in use is renewed: the session runs a full 30 days again from now
     token_hash = me.session.cookie_jar.filter_cookies(server.make_url("/api/me"))["hunt_session"].value
     h = hunt_server.sha(token_hash)
@@ -147,7 +192,7 @@ async def main():
     for c in (mine, theirs, me, them, anon):
         await c.close()
     await server.close()
-    os.remove(db)
+    shutil.rmtree(folder)
 
 
 asyncio.run(main())

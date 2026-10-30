@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#000000">
+<link rel="icon" href="../icon-192.png">
+<title>Poopihunt logs</title>
+<style>
+  /* Every device's hunt log, for admins (a browser logged in on /app/ to one of admins.json's
+     devices). The app's colors: black, the text box's teal and red, Gen3 for the titles. */
+  @font-face { font-family: "Gen3"; src: url(../fonts/gen3.woff2) format("woff2"); font-display: block; }
+  :root { color-scheme: dark; --ink: #e8e8e0; --dim: #8b8b93; --line: #24242b; --panel: #111116;
+          --teal: #6aa4a4; --red: #ff6a5a; --gold: #f6d55a; --green: #6be36b; --frame: #d54a39; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #000; color: var(--ink); font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  h1, .gba { font-family: "Gen3", monospace; font-weight: 400; -webkit-font-smoothing: none; }
+  h1 { font-size: 16px; line-height: 16px; margin: 0; letter-spacing: 1px; }
+  button, input { font: inherit; color: inherit; }
+  [hidden] { display: none !important; }
+  a { color: var(--teal); }
+
+  header { position: sticky; top: 0; z-index: 3; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+           padding: 12px 16px; background: #000; border-bottom: 2px solid var(--frame); }
+  header h1 { margin-right: auto; }
+  .tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  input[type=search] { width: 240px; max-width: 60vw; padding: 6px 10px; border: 1px solid #3a3a44; border-radius: 6px;
+                       background: var(--panel); outline: none; }
+  input[type=search]:focus { border-color: var(--teal); }
+  .chip { padding: 5px 10px; border: 1px solid #3a3a44; border-radius: 999px; background: var(--panel); cursor: pointer;
+          white-space: nowrap; }
+  .chip.on { border-color: var(--teal); background: #173333; color: #bff; }
+
+  main { display: grid; grid-template-columns: 280px 1fr; min-height: calc(100vh - 60px); }
+  #devices { border-right: 1px solid var(--line); padding: 8px; overflow-y: auto; max-height: calc(100vh - 60px);
+             position: sticky; top: 60px; }
+  .dev { display: block; width: 100%; text-align: left; padding: 8px 10px; margin-bottom: 4px; border: 1px solid transparent;
+         border-radius: 8px; background: none; cursor: pointer; }
+  .dev:hover { background: var(--panel); }
+  .dev.on { border-color: var(--teal); background: #0d1d1d; }
+  .dev b { font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dev small { color: var(--dim); display: block; }
+  .dev .bad { color: var(--red); }
+  .led { display: inline-block; width: 6px; height: 6px; margin-right: 6px; background: #4a4152; vertical-align: 1px; }
+  .led.on { background: var(--green); box-shadow: 0 0 4px var(--green); }
+
+  #log { padding: 8px 0 40px; min-width: 0; }
+  .older { display: block; margin: 4px auto 10px; }
+  .row { display: grid; grid-template-columns: 72px 1fr; gap: 10px; padding: 0 16px; white-space: pre-wrap;
+         word-break: break-word; }
+  .row:hover { background: #0c0c10; }
+  .row .t { color: var(--dim); user-select: none; }
+  .row.problem .x { color: var(--red); }
+  .row.detail .x { color: var(--teal); }
+  .row.note .x { color: var(--gold); }
+  .row.found .x { color: var(--gold); font-weight: 600; }
+  .row.pick { background: #1a1a10; }
+  .row mark { background: #5a4a10; color: inherit; }
+  .run { margin: 14px 16px 6px; padding-top: 6px; border-top: 1px dashed #33333d; color: var(--dim); }
+  .run b { color: var(--ink); font-weight: 600; }
+  .shot img { display: block; max-width: min(480px, 100%); margin: 4px 0 8px; border: 1px solid #33333d; border-radius: 4px;
+              cursor: zoom-in; }
+  .empty { padding: 40px 16px; color: var(--dim); text-align: center; }
+  .empty .gba { color: var(--ink); font-size: 16px; line-height: 24px; }
+
+  #big { position: fixed; inset: 0; z-index: 9; background: rgba(0,0,0,.92); display: flex; align-items: center;
+         justify-content: center; cursor: zoom-out; padding: 16px; }
+  #big img { max-width: 100%; max-height: 100%; }
+
+  @media (max-width: 760px) {
+    main { grid-template-columns: 1fr; }
+    #devices { position: static; max-height: 220px; border-right: 0; border-bottom: 1px solid var(--line); }
+    .row { grid-template-columns: 58px 1fr; gap: 6px; padding: 0 10px; font-size: 12px; }
+    input[type=search] { width: 100%; max-width: none; }
+    .tools { width: 100%; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>POOPIHUNT LOGS</h1>
+  <div class="tools" id="tools" hidden>
+    <input type="search" id="q" placeholder="Search: Zubat, stuck, Rufescent…" autocomplete="off">
+    <button class="chip" id="problems" title="What went wrong, pictures and notes only">Problems</button>
+    <button class="chip on" id="live" title="New lines as they come">Live</button>
+  </div>
+</header>
+<div class="empty" id="gate" hidden></div>
+<main id="main" hidden>
+  <nav id="devices"></nav>
+  <section id="log"></section>
+</main>
+<div id="big" hidden><img alt=""></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = { devices: [], device: null, lines: [], oldest: null, done: false, q: "", problems: false, live: true, pick: null };
+
+async function api(path) {
+  const r = await fetch("/api/" + path, { credentials: "same-origin" });
+  if (!r.ok) { const e = new Error(await r.text()); e.status = r.status; throw e; }
+  return r.json();
+}
+
+function ago(t) {
+  if (!t) return "never";
+  const s = Date.now() / 1000 - t;
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s / 60) + " min ago";
+  if (s < 86400) return Math.floor(s / 3600) + " h ago";
+  return Math.floor(s / 86400) + " d ago";
+}
+const pad = (n) => String(n).padStart(2, "0");
+const clock = (t) => { const d = new Date(t * 1000); return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; };
+const day = (t) => new Date(t * 1000).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+
+function esc(s) {
+  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+function marked(text) {
+  if (!state.q) return esc(text);
+  const lower = text.toLowerCase(), q = state.q.toLowerCase();
+  let out = "", i = 0, j;
+  while ((j = lower.indexOf(q, i)) >= 0) {
+    out += esc(text.slice(i, j)) + "<mark>" + esc(text.slice(j, j + q.length)) + "</mark>";
+    i = j + q.length;
+  }
+  return out + esc(text.slice(i));
+}
+
+// ------------------------------------------------------------------ the devices
+
+async function loadDevices() {
+  const { devices } = await api("logs/devices");
+  state.devices = devices;
+  drawDevices();
+}
+
+function drawDevices() {
+  const nav = $("devices");
+  nav.innerHTML = "";
+  for (const d of state.devices) {
+    const b = document.createElement("button");
+    b.className = "dev" + (d.id === state.device ? " on" : "");
+    const problem = d.problem && Date.now() / 1000 - d.problem < 86400
+      ? ` · <span class="bad">problem ${ago(d.problem)}</span>` : "";
+    b.innerHTML = `<b><span class="led${d.online ? " on" : ""}"></span>${esc(d.label || "(no name yet)")}</b>` +
+      `<small>${esc(d.build || "?")} · seen ${ago(d.seen)}</small>` +
+      `<small>${d.lines ? d.lines.toLocaleString() + " lines" : "no log yet"}${problem}</small>`;
+    b.onclick = () => choose(d.id);
+    nav.appendChild(b);
+  }
+}
+
+// ------------------------------------------------------------------ the log
+
+function query(extra) {
+  const p = new URLSearchParams(extra);
+  if (state.q) p.set("q", state.q);
+  if (state.problems) p.set("problems", "1");
+  return `logs/${encodeURIComponent(state.device)}?${p}`;
+}
+
+async function choose(id, around) {
+  state.device = id;
+  state.lines = [];
+  state.oldest = null;
+  state.done = false;
+  state.pick = around || null;
+  saveHash();
+  drawDevices();
+  const extra = { limit: 300 };
+  if (around) extra.before = around + 120;  // the line with what came before and after it
+  await more(extra, true);
+}
+
+async function more(extra, first) {
+  if (!state.device) return;
+  const want = state.device;
+  const p = Object.assign({ limit: 300 }, extra || {});
+  if (!first && state.oldest) p.before = state.oldest;
+  const { lines } = await api(query(p));
+  if (want !== state.device) return;
+  if (lines.length < p.limit) state.done = true;
+  // newest first from the server: the page reads top to bottom, oldest first
+  state.lines = lines.reverse().concat(state.lines);
+  if (lines.length) state.oldest = state.lines[0].id;
+  draw(first);
+}
+
+async function newer() {
+  if (!state.device || !state.live || !state.lines.length || document.hidden) return;
+  const last = state.lines[state.lines.length - 1].id;
+  const want = state.device;
+  const { lines } = await api(query({ limit: 500 }));
+  if (want !== state.device) return;
+  const fresh = lines.filter((l) => l.id > last).reverse();
+  if (!fresh.length) return;
+  const atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 40;
+  state.lines = state.lines.concat(fresh);
+  draw(false);
+  if (atBottom) window.scrollTo(0, document.body.scrollHeight);
+}
+
+function draw(scroll) {
+  const log = $("log");
+  const before = document.body.scrollHeight - window.scrollY;
+  log.innerHTML = "";
+  if (!state.done && state.lines.length) {
+    const b = document.createElement("button");
+    b.className = "chip older";
+    b.textContent = "Older lines";
+    b.onclick = async () => {
+      const keep = document.body.scrollHeight - window.scrollY;
+      await more();
+      window.scrollTo(0, document.body.scrollHeight - keep);
+    };
+    log.appendChild(b);
+  }
+  if (!state.lines.length) {
+    log.innerHTML = `<div class="empty">${state.q || state.problems ? "Nothing matches." : "No log from this device yet."}</div>`;
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  let run = null, lastDay = null;
+  for (const l of state.lines) {
+    const d = day(l.at);
+    if (l.run !== run || d !== lastDay) {
+      const sep = document.createElement("div");
+      sep.className = "run";
+      sep.innerHTML = `<b>${esc(d)}</b>` + (l.run ? ` · run ${esc(l.run)}` : "") + (l.who ? ` · ${esc(l.who)}` : "");
+      frag.appendChild(sep);
+      run = l.run; lastDay = d;
+    }
+    const row = document.createElement("div");
+    const found = l.kind === "line" && /\s(found|caught)$/.test(l.text.trim());  // an encounter's line, kept
+    row.className = `row ${l.kind}` + (found ? " found" : "") + (l.id === state.pick ? " pick" : "");
+    row.innerHTML = `<span class="t">${clock(l.at)}</span><span class="x"></span>`;
+    const x = row.lastChild;
+    if (l.kind === "shot") {
+      x.innerHTML = `📷 ${marked(l.text)}`;
+      const img = document.createElement("img");
+      img.loading = "lazy";
+      img.alt = l.text;
+      img.src = `/api/logs/${encodeURIComponent(state.device)}/shot/${encodeURIComponent(l.shot)}`;
+      img.onclick = () => { $("big").firstChild.src = img.src; $("big").hidden = false; };
+      row.classList.add("shot");
+      x.appendChild(img);
+    } else {
+      x.innerHTML = marked(l.text);
+    }
+    if (state.q || state.problems) {  // a search's line: click for what was around it
+      row.style.cursor = "pointer";
+      row.title = "Show what was around this";
+      row.onclick = () => { state.q = ""; $("q").value = ""; state.problems = false; $("problems").classList.remove("on"); choose(state.device, l.id); };
+    }
+    frag.appendChild(row);
+  }
+  log.appendChild(frag);
+  if (state.pick) {
+    const at = log.querySelector(".pick");
+    if (at) at.scrollIntoView({ block: "center" });
+  } else if (scroll) {
+    window.scrollTo(0, document.body.scrollHeight);
+  } else {
+    window.scrollTo(0, document.body.scrollHeight - before);
+  }
+}
+
+// ------------------------------------------------------------------ the controls
+
+function saveHash() {
+  const p = new URLSearchParams();
+  if (state.device) p.set("device", state.device);
+  if (state.q) p.set("q", state.q);
+  if (state.problems) p.set("problems", "1");
+  history.replaceState(null, "", "#" + p);
+}
+
+let typing;
+$("q").addEventListener("input", () => {
+  clearTimeout(typing);
+  typing = setTimeout(() => { state.q = $("q").value.trim(); state.pick = null; saveHash(); if (state.device) choose(state.device); }, 300);
+});
+$("problems").onclick = () => {
+  state.problems = !state.problems;
+  $("problems").classList.toggle("on", state.problems);
+  if (state.device) choose(state.device);
+};
+$("live").onclick = () => {
+  state.live = !state.live;
+  $("live").classList.toggle("on", state.live);
+};
+$("big").onclick = () => { $("big").hidden = true; };
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("big").hidden = true; });
+
+async function start() {
+  try {
+    await loadDevices();
+  } catch (e) {
+    const gate = $("gate");
+    gate.hidden = false;
+    gate.innerHTML = e.status === 401
+      ? `<div class="gba">LOG IN FIRST</div><p>Type your own Hunt's website code on <a href="../">poopihunt.xyz/app</a>, then come back here.</p>`
+      : e.status === 403
+        ? `<div class="gba">NOT AN ADMIN</div><p>This browser is logged in, but not to an admin's Hunt. Log in on <a href="../">poopihunt.xyz/app</a> with your own Hunt's code.</p>`
+        : `<div class="gba">NO CONNECTION</div><p>${esc(e.message || "poopihunt.xyz can't be reached")}</p>`;
+    return;
+  }
+  $("main").hidden = false;
+  $("tools").hidden = false;
+  const p = new URLSearchParams(location.hash.slice(1));
+  state.q = p.get("q") || "";
+  $("q").value = state.q;
+  state.problems = p.get("problems") === "1";
+  $("problems").classList.toggle("on", state.problems);
+  const id = p.get("device") || (state.devices.find((d) => d.lines) || state.devices[0] || {}).id;
+  if (id) await choose(id);
+  setInterval(() => newer().catch(() => {}), 5000);
+  setInterval(() => loadDevices().catch(() => {}), 30000);
+}
+start();
+</script>
+</body>
+</html>

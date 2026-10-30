@@ -21,7 +21,7 @@ Download it from **https://poopihunt.xyz**.
 
 - **Play / stop.** A right click (computer) or long press (phone) is a
   **debug run**: it hunts, and at the next encounter checks every step (a Quick
-  Ball, Yawn, running, the bag, saving) and reports to the debug channel. A new
+  Ball, Yawn, running, the bag, saving) and reports to the logs. A new
   install's first hunt does one by itself.
 - **The website code** (tap to copy on a phone). Type it on
   https://poopihunt.xyz/app to watch, take over a battle and throw balls from
@@ -38,7 +38,7 @@ All Rust, one Cargo workspace:
 
 - `core/`: the hunter, the same everywhere: reading the screen, fitting the
   layout, the rules and catch plan (built in: `core/src/config.rs`), the bag and
-  MENU, saving, the website link, Discord and the debug channel.
+  MENU, saving, the website link, Discord and the logs.
 - `window/`: Hunt / Hunt.exe, the pill with the hunter inside, and each
   desktop's screenshots, clicks and text recognition (`window/src/desktop/`).
 - `android/`: the app (Kotlin) around `android/rust/` (hunt-core through UniFFI).
@@ -69,10 +69,12 @@ On a Mac, `Poopihunt.command` builds and opens the pill from Terminal.
 **Icons**: `python windows/make_icon.py` makes every one from
 `windows/hunt-icon.png`.
 
-**Debug channels**: Windows' webhook is the repository's `WINDOWS_DEBUG_WEBHOOK`
-secret; Android's is in `secrets.json` (not in the repository:
-`{"android_debug_webhook": "..."}`). They get debug runs in full, and otherwise
-only what goes wrong (the lines before it, a screenshot, crashes) and updates.
+**Logs**: every Hunt sends its log to poopihunt.xyz (`core/src/out.rs`): each
+line, each encounter's reads with what the box's text was, what went wrong with
+its picture, crashes and updates; kept 7 days. Read them on
+https://poopihunt.xyz/app/logs/ in a browser logged in (on /app) to one of the
+devices in the server's `data/admins.json` (`["device id", ...]`). The pill's
+**Send problem reports** off sends nothing.
 
 **Server**: poopihunt.xyz is in `/srv/poopihunt.xyz` on the stingray server
 (owner `poopihunt`, nginx site `poopihunt.xyz`, the `poopihunt-api` service),

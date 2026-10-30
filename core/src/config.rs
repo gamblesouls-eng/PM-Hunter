@@ -1,7 +1,7 @@
 //! What the hunt goes by. Nothing to set: what's caught (a reskin and a gradient, any
 //! Pokemon), the catch plan and the rest are built in. config.json keeps only the
-//! Discord webhook (the pill's box, the phone app's), and "debug_webhook"; anything
-//! else in an old one is passed over. with_rules reads rules too, for the tests.
+//! Discord webhook (the pill's box, the phone app's); anything else in an old one is
+//! passed over. with_rules reads rules too, for the tests.
 
 use crate::rules::{show, Rule, FIELDS};
 use serde_json::{json, Map, Value};
@@ -18,8 +18,6 @@ pub struct Config {
     pub post: Vec<Rule>,
     /// The catch plan: CATCH_PLAN with config.json's "catch" over it.
     pub catch: Map<String, Value>,
-    /// The debug channel; None: the platform's own (a build's), "" for none.
-    pub debug_webhook: Option<String>,
 }
 
 /// Caught unless "catch_reskin_gradient": false.
@@ -31,11 +29,13 @@ pub fn auto_catch() -> Rule {
 pub fn catch_plan() -> Map<String, Value> {
     json!({
         "first_ball": "Quick Ball", "sleep_move": "Yawn", "guard_move": "Protect",
-        "asleep_ball": "Repeat Ball", "awake_ball": "Repeat Ball", "new_ball": "Dive Ball",
-        "max_balls": 8,
+        "asleep_ball": "Repeat Ball", "awake_ball": "Repeat Ball", "new_ball": "Timer Ball",
+        // a favorited Level Ball (x8) goes before every other ball; "" for none
+        "level_ball": "Level Ball",
+        "max_balls": 6767,
         // x1 + 0.3 for each turn passed (x4 at most): past a Repeat Ball's x3.5 once 9 turns have gone by
         "timer_ball": "Timer Ball", "timer_after": 9,
-        "max_turns": 30, "legendary_max_balls": 30, "legendary_max_turns": 90,
+        "max_turns": 6767, "legendary_max_balls": 6767, "legendary_max_turns": 6767,
         "heal_below": 0.4, "heal_item": "Full Restore",
         "pp_item": "Max Elixir", "on_fail": "hold",
         "sleep_with": "Clodsire"  // the lead that knows Yawn and Protect; others just throw balls
@@ -48,15 +48,13 @@ pub fn catch_plan() -> Map<String, Value> {
 pub const WEB_BALLS: [&str; 3] = ["Quick Ball", "Timer Ball", "Repeat Ball"]; // the page's Bag, unless "web_balls" says
 
 impl Config {
-    /// config.json: its webhook (and debug_webhook) and nothing else, the rest built in.
+    /// config.json: its webhook and nothing else, the rest built in.
     /// Never wrong: a file that isn't JSON has no webhook.
     pub fn parse(text: &str) -> Result<Config, String> {
         let raw: Map<String, Value> = serde_json::from_str(text).unwrap_or_default();
         let mut kept = Map::new();
-        for k in ["webhook", "debug_webhook"] {
-            if let Some(v) = raw.get(k) {
-                kept.insert(k.to_string(), v.clone());
-            }
+        if let Some(v) = raw.get("webhook") {
+            kept.insert("webhook".to_string(), v.clone());
         }
         Config::with_rules(&Value::Object(kept).to_string())
     }
@@ -107,7 +105,6 @@ impl Config {
         Ok(Config {
             webhook: text("webhook"),
             ping: text("ping"),
-            debug_webhook: raw.get("debug_webhook").map(|v| v.as_str().unwrap_or("").to_string()),
             targets,
             notify,
             post,
@@ -170,7 +167,7 @@ mod tests {
         assert_eq!(c.webhook, "https://x");
         assert!(c.targets.is_empty());
         assert_eq!(c.notify, vec![auto_catch()]);
-        assert_eq!(c.num("max_balls"), 8.0);
+        assert_eq!(c.num("max_balls"), 6767.0);
         assert_eq!(Config::parse("not json").unwrap().webhook, "");
     }
 
@@ -179,7 +176,10 @@ mod tests {
         let c = Config::parse(r#"{"webhook": "", "targets": [], "notify": []}"#).unwrap();
         assert_eq!(c.notify, vec![auto_catch()]);
         assert_eq!(c.str("first_ball"), "Quick Ball");
-        assert_eq!(c.num("max_balls"), 8.0);
+        assert_eq!(c.num("max_balls"), 6767.0);
+        assert_eq!(c.num("max_turns"), 6767.0);
+        assert_eq!(c.num("legendary_max_balls"), 6767.0);
+        assert_eq!(c.num("legendary_max_turns"), 6767.0);
     }
 
     #[test]

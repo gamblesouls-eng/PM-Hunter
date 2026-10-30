@@ -251,3 +251,138 @@ fn reads_the_moves() {
     // the battle's text before the menu is up is no move
     assert!(reader::moves(&[hit("What should Clodsire do?", 0.2, 0.2), hit("Clodsire used Yawn!", 0.2, 0.2)]).is_empty());
 }
+
+/// Your Pokemon's HP from its bar: where the text says 282 / 367 (Entei samples) and full
+/// elsewhere, on PCs and phone shapes; off the bar (an uncalibrated phone layout), unknown, never 0%.
+#[test]
+fn reads_hp_from_the_bar() {
+    for name in BATTLES {
+        let f = load(name);
+        let m = find_mute(&f, None).unwrap();
+        let hp = vision::hp_bar(&f, &Layout::new(m, &calibrate(&f, m).unwrap())).unwrap();
+        assert!(hp > 0.98, "{name}: {hp}");
+        let p = phone(&f, 2340, 1080, 0.75, 0.86);
+        let m = find_mute(&p, None).unwrap();
+        assert!(vision::hp_bar(&p, &Layout::flat(m)).is_none(), "{name} squeezed, uncalibrated");
+        let hp = vision::hp_bar(&p, &Layout::new(m, &calibrate(&p, m).unwrap())).unwrap();
+        assert!(hp > 0.97, "{name} squeezed: {hp}");
+    }
+    for name in ["entei-plain.png", "entei-galaxy.png"] {
+        let f = load(name);
+        let m = find_mute(&f, None).unwrap();
+        let hp = vision::hp_bar(&f, &Layout::new(m, &calibrate(&f, m).unwrap())).unwrap();
+        assert!((hp - 282.0 / 367.0).abs() < 0.02, "{name}: {hp}");
+    }
+    // a bar run down: its right part dark, as the game draws it
+    let mut f = load("marill-inferno-tint.png");
+    let m = find_mute(&f, None).unwrap();
+    let lay = Layout::new(m, &calibrate(&f, m).unwrap());
+    let bar = lay.boxed(layout::HP_BAR);
+    let cut = bar.l + (bar.r - bar.l) * 3 / 10;
+    for y in bar.t..bar.b {
+        for x in cut..bar.r {
+            f.put_pixel(x as u32, y as u32, image::Rgb([33, 33, 33]));
+        }
+    }
+    let hp = vision::hp_bar(&f, &lay).unwrap();
+    assert!((hp - 0.3).abs() < 0.03, "{hp}");
+}
+
+/// The Pokemon Party screen's cards by their colors, in party order: the lead first (a
+/// Full Restore's target when its name reads as "sire"); a fainted one told apart.
+#[test]
+fn finds_the_party_cards() {
+    let cards = vision::party_cards(&load("party-full-restore.png"));
+    assert_eq!(cards.len(), 6);
+    assert!(cards.iter().all(|c| !c.1));
+    let lead = cards[0].0.center();
+    assert!((lead.x - 383.0).abs() < 20.0 && (lead.y - 145.0).abs() < 20.0, "{lead:?}");
+    let cards = vision::party_cards(&load("party-fainted.png"));
+    assert_eq!(cards.len(), 6);
+    assert!(cards[0].1, "Gallade fainted");
+    assert!(cards[1..].iter().all(|c| !c.1));
+    assert!(vision::party_cards(&load("bag-left-open.png")).is_empty());
+    assert!(vision::party_cards(&load("quaxly-shiny.png")).is_empty());
+}
+
+/// The backpack's Close by its red pill, the word read in pieces ("C", "e", "lose").
+#[test]
+fn finds_the_bags_close() {
+    let f = load("bag-left-open.png");
+    let at = vision::bag_close(&f, hunt_core::Pt::new(333.0, 147.0)).unwrap();
+    assert!((at.x - 937.0).abs() < 25.0 && (at.y - 147.0).abs() < 12.0, "{at:?}");
+}
+
+#[test]
+fn reads_the_battle_and_party_words() {
+    assert_eq!(reader::hp("Clodsire Lv. 129 412 / 415"), Some(412.0 / 415.0));
+    assert_eq!(reader::hp("351 / 36"), None); // more than its max: a misread, not 975%
+    assert!(reader::wild_fainted("The wild Giratina fainted!"));
+    assert!(!reader::wild_fainted("Gallade fainted!"));
+    assert!(reader::wild_statused("The wild Giratina was poisoned!"));
+    assert!(reader::wild_statused("The wild Giratina was hurt by poison!"));
+    assert!(!reader::wild_statused("The wild Misdreavus fell asleep!"));
+    let t = |s: &str, x: f64, y: f64| TextHit::new(s, x, y);
+    let party = [t("o", 0.1, 0.1), t("sire", 0.3, 0.15), t("Pokemon Party", 0.7, 0.11),
+                 t("Choose a Pokemon to use Full Restore on.", 0.27, 0.81), t("Close", 0.8, 0.89)];
+    assert!(reader::party_up(&party) && !reader::next_asked(&party));
+    assert!(reader::next_asked(&[t("Choose your next Pokemon.", 0.2, 0.77)]));
+    assert!(reader::close_word(&t("lose", 0.0, 0.0)) && !reader::close_word(&t("Clodsire", 0.0, 0.0)));
+    // a search left in the box hides the list; the placeholder doesn't count
+    let bag = [t("Backpack", 333.0, 147.0), t("Pokeball", 436.0, 210.0), t("Dive Ball", 950.0, 210.0), t("Close", 937.0, 147.0)];
+    assert_eq!(reader::search_leftover(&bag, 700.0, 0.64).map(|h| h.text), Some("Dive Ball".to_string()));
+    let bag = [t("Backpack", 333.0, 147.0), t("Search...", 950.0, 210.0), t("Close", 937.0, 147.0), t("x18,899", 940.0, 266.0)];
+    assert!(reader::search_leftover(&bag, 700.0, 0.64).is_none());
+}
+
+#[test]
+fn sees_reskins_and_gradient_tabs_without_reading() {
+    // (reskin, gradient tab): every battle sample, on its own screen size
+    let want = [
+        ("quaxly-shiny.png", false, false),
+        ("shellos-tint.png", false, false),
+        ("remoraid-shiny.png", false, false),
+        ("dewpider-mirage.png", false, true),
+        ("marill-inferno-tint.png", true, false),
+        ("lotad-skittles.png", false, true),
+        ("tyrogue-mummified.png", true, false),
+        ("tatsugiri-plain-tint.png", false, false),
+        ("runerigus-amberfall.png", false, true), // its tab right under the box: no reskin
+        ("entei-plain.png", false, false),
+        ("entei-coal.png", true, false),
+        ("entei-galaxy.png", true, false),
+        ("entei-wave-tint.png", true, false),
+        ("mew-toxic.png", true, false),
+        ("phone-pikachu-shiny.png", false, false),
+        ("phone16-pichu-shiny.png", false, false),
+    ];
+    for (name, reskin, tab) in want {
+        let f = load(name);
+        let mute = find_mute(&f, None).expect(name);
+        let lay = Layout::new(mute, &calibrate(&f, mute).unwrap_or_default());
+        assert_eq!(vision::reskin_shown(&f, &lay), reskin, "{name}: reskin");
+        assert_eq!(vision::gradient_tab(&f, &lay).unwrap_or(false), tab, "{name}: gradient tab");
+        // a window scaled a little off: the game 8 px from where the layout puts it
+        for (dx, dy) in [(0, -8), (0, 8), (-8, 0), (8, 0)] {
+            let mut g = px::Frame::from_pixel(f.width(), f.height(), image::Rgb([0, 0, 0]));
+            image::imageops::overlay(&mut g, &f, dx, dy);
+            assert_eq!(vision::reskin_shown(&g, &lay), reskin, "{name} moved {dx}, {dy}: reskin");
+            assert_eq!(vision::gradient_tab(&g, &lay).unwrap_or(false), tab, "{name} moved {dx}, {dy}: gradient tab");
+        }
+    }
+}
+
+#[test]
+fn sees_the_games_white_dialog_box() {
+    // a save's messages, whatever they say ("Error. Your save did not save correctly." on a
+    // Windows screen with its taskbar), and the red arrow asking for a click
+    for name in ["save-done.png", "save-error.png"] {
+        let f = load(name);
+        let at = vision::dialog_box(&f).expect(name);
+        assert!((at.y / f.height() as f64 - 0.87).abs() < 0.05, "{name}: {at:?}");
+        assert!(vision::dialog_waiting(&f).is_some(), "{name}: arrow");
+    }
+    for name in ["menu-open.png", "bag-open.png", "quaxly-shiny.png", "fight-menu.png", "dewpider-mirage.png", "party-fainted.png"] {
+        assert!(vision::dialog_box(&load(name)).is_none(), "{name}");
+    }
+}

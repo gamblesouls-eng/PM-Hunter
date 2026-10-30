@@ -53,6 +53,8 @@ re!(SHOULD, r"should (.+?) do");
 re!(SAVE_WAIT, r"(?i)wait\s+(\d+)\s+more\s+second");
 re!(SENT_TO, r"sent to (the )?(pc|box)");
 re!(TARGET_CUT, r"(?i)\s+-\s+|\s+lv");
+re!(WILD_FAINTED, r"(?i)\bwild\b.*\bfainted");
+re!(WILD_STATUSED, r"(?i)\bwild\b.*\b(was (badly )?poisoned|hurt by (the )?poison|was burned|hurt by its burn|is paralyzed|was paralyzed|was frozen)");
 
 pub const STATUSES: [&str; 6] = ["SLP", "PSN", "PAR", "BRN", "FRZ", "TOX"];
 
@@ -236,9 +238,11 @@ pub fn has_digit(t: &str) -> bool {
 
 /// Your Pokemon's HP as a fraction, from the text in its box.
 pub fn hp(text: &str) -> Option<f64> {
-    let m = HP_SLASH.captures(text)?;
-    let (hp, max): (f64, f64) = (m[1].parse().ok()?, m[2].parse().ok()?);
-    (max > 0.0).then(|| hp / max)
+    // the last "a / b" with a <= b ("Lv. 129 412/415" isn't 129/415): anything else is a misread
+    HP_SLASH.captures_iter(text).filter_map(|m| {
+        let (hp, max): (f64, f64) = (m[1].parse().ok()?, m[2].parse().ok()?);
+        (max > 0.0 && hp <= max).then(|| hp / max)
+    }).last()
 }
 
 /// "What should Clodsire do?" -> "Clodsire"
@@ -256,15 +260,21 @@ fn tab_index(t: &str) -> Option<usize> {
 /// Where the backpack's tab is. On a small window or a phone the labels are
 /// tiny and some aren't read, or are misread ("TMB", "Heid Iterme"), but the
 /// tabs sit in a fixed order, evenly spaced: one that isn't read is worked out
-/// from the ones that are. The TextHit is made up in that case (its text the tab's).
+/// from the ones that are. With one read, or none (Windows read only "Z- Cry St. Is"
+/// in a small window, the bag left on TMs), from the "Backpack" title over them:
+/// the first tab is TAB_FIRST tab steps under it, the search box TAB_SEARCH (the
+/// bag's width doesn't say: it's squatter on some screens). The TextHit is made up
+/// in that case (its text the tab's).
 pub fn find_tab(texts: &[TextHit], want: &str, split: f64, width: u32) -> Option<TextHit> {
     let Some(i) = TABS.iter().position(|t| t.to_lowercase() == want.to_lowercase()) else {
         return texts.iter().find(|t| t.text.to_lowercase() == want.to_lowercase()).cloned();
     };
+    // (the list's heading is the open tab's name too: it's right of the title's middle, the tabs left)
+    let left = texts.iter().find(|t| norm(&t.text) == "backpack").map_or(split, |t| t.x.min(split));
     let hits: Vec<(usize, &TextHit)> =
-        texts.iter().filter(|t| t.x < split).filter_map(|t| tab_index(&t.text).map(|n| (n, t))).collect();
+        texts.iter().filter(|t| t.x < left).filter_map(|t| tab_index(&t.text).map(|n| (n, t))).collect();
     if hits.is_empty() {
-        return None;
+        return tab_from_title(texts, i, None, split);
     }
     let col = hits.iter().map(|h| h.1.x).fold(f64::INFINITY, f64::min); // the tab column; the list's heading is further right
     let in_col: Vec<&(usize, &TextHit)> = hits.iter().filter(|h| (h.1.x - col).abs() < 0.04 * width as f64).collect();
@@ -275,7 +285,7 @@ pub fn find_tab(texts: &[TextHit], want: &str, split: f64, width: u32) -> Option
     kinds.sort();
     kinds.dedup();
     if kinds.len() < 2 {
-        return None;
+        return tab_from_title(texts, i, Some(in_col[0]), split);
     }
     let n: Vec<f64> = in_col.iter().map(|h| h.0 as f64).collect();
     let y: Vec<f64> = in_col.iter().map(|h| h.1.y).collect();
@@ -289,6 +299,29 @@ pub fn find_tab(texts: &[TextHit], want: &str, split: f64, width: u32) -> Option
     Some(TextHit::new(TABS[i], mid, my + step * (i as f64 - mn)))
 }
 
+// samples/bag-open.png: "Backpack" at y 287, the tabs at 418 + 75.3 n (x 490, the title's 527),
+// the search box at 390
+const TAB_FIRST: f64 = 131.0 / 75.3;
+const TAB_SEARCH: f64 = 103.0 / 75.3;
+const TAB_X: f64 = -37.0 / 75.3;
+
+/// Tab i from the bag's title and one tab that was read, or (none read) the search box.
+fn tab_from_title(texts: &[TextHit], i: usize, read: Option<&(usize, &TextHit)>, split: f64) -> Option<TextHit> {
+    let title = texts.iter().find(|t| norm(&t.text) == "backpack")?;
+    let (step, x) = match read {
+        Some((k, t)) => ((t.y - title.y) / (TAB_FIRST + *k as f64), t.x),
+        None => {
+            let close = texts.iter().find(|t| t.is("close") && t.x > split)?;
+            let room = 0.2 * (close.x - title.x); // (the search box is just under Close, above the list)
+            let search = texts.iter().filter(|t| t.x > split && t.y > close.y + 5.0 && t.y - close.y < room && !is_count(&t.text))
+                .min_by(|a, b| a.y.total_cmp(&b.y))?;
+            let step = (search.y - title.y) / TAB_SEARCH;
+            (step, title.x + TAB_X * step)
+        }
+    };
+    (step > 0.0).then(|| TextHit::new(TABS[i], x, title.y + step * (TAB_FIRST + i as f64)))
+}
+
 /// The bag's search box: just under Close, whatever it shows ("Search", "QUICK
 /// BALL", a lowercase "full" left in it), never the menu bar's "A ABC" up top.
 pub fn search_box(texts: &[TextHit], split: f64, v: f64) -> Option<Pt> {
@@ -298,6 +331,20 @@ pub fn search_box(texts: &[TextHit], split: f64, v: f64) -> Option<Pt> {
     by_y.into_iter()
         .find(|t| t.x > split && 40.0 * v < t.y - close && t.y - close < 170.0 * v && !is_count(&t.text))
         .map(|t| t.pt())
+}
+
+/// A search left in the bag's search box ("Dive Ball", typed by an older Hunt): the text
+/// in the box, under the "Backpack" title and above the list's rows, that isn't its
+/// "Search..." placeholder.
+pub fn search_leftover(texts: &[TextHit], split: f64, v: f64) -> Option<TextHit> {
+    let title = bag_title(texts)?.y;
+    let rows = texts.iter().filter(|t| is_count(&t.text)).map(|t| t.y).fold(f64::INFINITY, f64::min);
+    texts.iter()
+        .filter(|t| t.x > split && t.y > title + 25.0 * v && t.y < rows - 20.0 * v && !is_count(&t.text)
+            && !close_word(t) && two_letters(&t.text))
+        .min_by(|a, b| a.y.total_cmp(&b.y))
+        .filter(|t| !norm(&t.text).starts_with("search"))
+        .cloned()
 }
 
 /// The bag's stopped moving (it floats up as it opens): its "Backpack" title
@@ -317,15 +364,12 @@ pub fn menu_open(texts: &[TextHit]) -> bool {
     texts.iter().filter(|t| MENU_ITEMS.iter().any(|m| norm(m) == norm(&t.text) || same_word(m, &t.text))).count() >= 2
 }
 
-/// Where to click a MENU item: its tile, half a row above its label (on a
-/// phone only the tile takes taps); the label itself on the retry, or if no
-/// other label shows how far apart the rows are. The rows' height from the
-/// labels read and how many items apart they are in the MENU (a label not
-/// read, "Party", doesn't make two rows look like one).
-pub fn menu_button(hit: Pt, texts: &[TextHit], retry: bool) -> Pt {
-    if retry {
-        return hit;
-    }
+/// Where to click a MENU item: its tile, half a row above its label (only the
+/// tile takes clicks and taps; the label under it doesn't). The rows' height from
+/// the labels read and how many items apart they are in the MENU (a label not
+/// read, "Party", doesn't make two rows look like one); with one label read, as
+/// the MENU usually is on a screen this tall (screen_h px: a row is 9.3% of it).
+pub fn menu_button(hit: Pt, texts: &[TextHit], screen_h: f64) -> Pt {
     let mut seen: std::collections::BTreeMap<usize, f64> = Default::default();
     for t in texts {
         if let Some(i) = MENU_ITEMS.iter().position(|m| norm(m) == norm(&t.text)) {
@@ -338,7 +382,8 @@ pub fn menu_button(hit: Pt, texts: &[TextHit], retry: bool) -> Pt {
         .map(|w| (w[1].1 - w[0].1) / (w[1].0 - w[0].0) as f64)
         .collect();
     steps.sort_by(f64::total_cmp);
-    if steps.is_empty() { hit } else { Pt::new(hit.x, hit.y - steps[steps.len() / 2] / 2.0) }
+    let row = steps.get(steps.len() / 2).copied().unwrap_or(screen_h * 0.093);
+    Pt::new(hit.x, hit.y - row / 2.0)
 }
 
 /// The box after Save: "Save successful", "Try again", or "Unable to save.
@@ -359,6 +404,43 @@ pub fn save_wait(t: &str) -> Option<u64> {
 pub fn caught_said(msg: &str) -> bool {
     let m = msg.to_lowercase();
     m.contains("was caught") || m.contains("gotcha") || m.contains("added to the party") || SENT_TO.is_match(&m)
+}
+
+/// "The wild Giratina fainted!" (its poison, say): the battle's over, nothing caught.
+pub fn wild_fainted(msg: &str) -> bool {
+    WILD_FAINTED.is_match(msg)
+}
+
+/// "The wild Giratina was poisoned!", "... was hurt by poison!": it has a status, whether
+/// or not its badge is read (Yawn can't work on it).
+pub fn wild_statused(msg: &str) -> bool {
+    WILD_STATUSED.is_match(msg)
+}
+
+/// The Pokemon Party screen: in battle "Choose a Pokemon to use Full Restore on." (or
+/// "Choose your next Pokemon." when yours fainted), outside one "Select a pokemon to heal".
+pub fn party_up(texts: &[TextHit]) -> bool {
+    texts.iter().any(|t| {
+        let l = t.text.to_lowercase();
+        l.starts_with("choose a pokemon") || l.starts_with("select a pokemon") || l.starts_with("pokemon party")
+            || l.starts_with("choose your next")
+    })
+}
+
+/// Your Pokemon fainted: "Choose your next Pokemon."
+pub fn next_asked(texts: &[TextHit]) -> bool {
+    texts.iter().any(|t| t.text.to_lowercase().starts_with("choose your next"))
+}
+
+/// The backpack is open: its "Backpack" title.
+pub fn bag_title(texts: &[TextHit]) -> Option<&TextHit> {
+    texts.iter().find(|t| norm(&t.text) == "backpack")
+}
+
+/// A Close button's word, whole or in the pieces some PCs read it as ("C", "e", "lose").
+pub fn close_word(t: &TextHit) -> bool {
+    let l = t.text.to_lowercase();
+    l == "close" || ["lose", "clos", "ciose", "c1ose", "cl0se", "close."].contains(&l.as_str())
 }
 
 /// The party screen's card for target: "Clodsire - Lv. 109".
@@ -437,11 +519,31 @@ mod tests {
     }
 
     #[test]
+    fn tabs_from_the_title() {
+        // a friend's Windows PC, the bag left on TMs: of the tabs only "Z- Cry St. Is" read
+        // (Pokeballs is at (314, 271), the tabs 44.7 px apart)
+        let mut texts = vec![hit("Backpack", 333.0, 148.0), hit("Close", 937.0, 148.0), hit("TMs", 380.0, 210.0),
+                             hit("Search...", 1000.0, 209.0), hit("Aerial Ace", 494.0, 266.0), hit("Blizzard", 486.0, 316.0),
+                             hit("Z- Cry St. Is", 314.0, 539.0)];
+        let t = find_tab(&texts, "Pokeballs", 700.0, 1280).unwrap();
+        assert!((t.x - 314.0).abs() < 4.0 && (t.y - 271.0).abs() < 4.0, "{t:?}");
+        // none read: the search box under Close
+        texts.pop();
+        let t = find_tab(&texts, "Pokeballs", 700.0, 1280).unwrap();
+        assert!((t.x - 314.0).abs() < 10.0 && (t.y - 271.0).abs() < 4.0, "{t:?}");
+        // no bag, no tab
+        assert!(find_tab(&texts[2..], "Pokeballs", 700.0, 1280).is_none());
+    }
+
+    #[test]
     fn menu_rows() {
         let texts = [hit("Pokedex", 100.0, 100.0), hit("Bag", 100.0, 300.0), hit("Save", 100.0, 500.0)];
         assert!(menu_open(&texts));
         // Party (not read) between Pokedex and Bag: rows 100 px apart
-        assert_eq!(menu_button(Pt::new(100.0, 500.0), &texts, false), Pt::new(100.0, 450.0));
+        assert_eq!(menu_button(Pt::new(100.0, 500.0), &texts, 1249.0), Pt::new(100.0, 450.0));
+        // only Save read (samples/menu-open.png: its label at y 856, its tile 767 to 834)
+        let at = menu_button(Pt::new(100.0, 856.0), &[hit("Save", 100.0, 856.0)], 1249.0);
+        assert!((767.0..834.0).contains(&at.y), "{at:?}");
         assert!(save_message("Unable to save. Please wait 95 more seconds."));
         assert_eq!(save_wait("Please wait 95 more seconds."), Some(95));
         assert!(caught_said("Rattata was sent to the PC!"));

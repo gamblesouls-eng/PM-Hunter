@@ -73,19 +73,12 @@ pub fn desktop() -> Arc<Desktop> {
     }).clone()
 }
 
-/// The debug channel: the Windows build's (published builds only), or
-/// config.json's "debug_webhook"; none with HUNT_DEBUG=0 (the pill's "problem
-/// reports" off).
-pub fn debug_channel(cfg: Option<&Config>, reports: bool) -> Arc<DebugChannel> {
-    let baked = if cfg!(windows) { option_env!("HUNT_DEBUG_WEBHOOK").unwrap_or("") } else { "" };
+/// The debug channel: the hunt's log on the website, with the device's key ("" for
+/// none); none with HUNT_DEBUG=0 (the pill's "problem reports" off).
+pub fn debug_channel(key: &str, reports: bool) -> Arc<DebugChannel> {
     let off = env::var("HUNT_DEBUG").as_deref() == Ok("0") || !reports;
-    let url = match cfg.and_then(|c| c.debug_webhook.clone()) {
-        Some(url) => url,
-        None if off => String::new(),
-        None => baked.to_string(),
-    };
     let who = format!("{} · {}", desktop_system(), build().1);
-    let d = DebugChannel::new(if url.starts_with("https://") { &url } else { "" }, &who);
+    let d = DebugChannel::new(if off { "" } else { key }, &who);
     d.set_header(&format!("Hunt {} on {}", build().1, desktop_system()));
     d
 }
@@ -112,10 +105,10 @@ pub struct Launch<'a> {
 /// A hunt on a thread of its own; done is called once it's over.
 pub fn launch(l: Launch, sink: Arc<dyn Sink>, done: impl FnOnce() + Send + 'static) -> Result<Arc<Control>, String> {
     let cfg = Config::load(l.config)?;
-    let debug = debug_channel(Some(&cfg), l.reports);
     let store = Store::new(data_dir());
     let watch = l.mode == "watch";
     let key = if watch { String::new() } else { hunt_core::web::key(&store.path("website.key")) };
+    let debug = debug_channel(&key, l.reports);
     let opts = Options {
         watch,
         paused: l.paused,
@@ -173,7 +166,9 @@ pub fn terminal(args: &[String]) -> i32 {
         }
     };
     if has("--diagnose") || has("--image") || has("--test-discord") {
-        let debug = debug_channel(Some(&cfg), true);
+        // (to the log only from a device the website knows: one that has hunted)
+        let key = std::fs::read_to_string(Store::new(&data).path("website.key")).unwrap_or_default();
+        let debug = debug_channel(&key, true);
         debug.loud.store(has("--diagnose"), std::sync::atomic::Ordering::Relaxed);
         let opts = Options { build: build().1.clone(), ..Default::default() };
         let (_c, mut hunt) = hunt_core::start(desktop(), console, debug.clone(), cfg, Store::new(&data), opts);

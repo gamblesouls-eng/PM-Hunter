@@ -179,7 +179,7 @@ class HuntService : AccessibilityService(), Phone {
         endHunter()
         val build = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
         // watching never taps, so there's nothing to take over on the website
-        val h = Hunter(this, config, filesDir.path, watch, debug, Hunt.deviceKey(this), build, BuildConfig.DEBUG_WEBHOOK)
+        val h = Hunter(this, config, filesDir.path, watch, debug, Hunt.deviceKey(this), build)
         hunter = h
         thread = Thread({
             h.run()

@@ -75,7 +75,7 @@ class BridgeTest {
         val phone = Pretend()
         val dir = Files.createTempDirectory("hunt").toFile()
         File(dir, "debug-run.json").writeText("{}")  // not a new install: no debug run first
-        val hunter = Hunter(phone, """{"targets": [{"species": "Lapras"}]}""", dir.path, false, false, "", "test", "")
+        val hunter = Hunter(phone, """{"targets": [{"species": "Lapras"}]}""", dir.path, false, false, "", "test")
         val thread = Thread { hunter.run() }.apply { start() }
         Thread.sleep(3000)  // (a phone waits 2 s past its first picture: a battle on screen then is yours)
         phone.inBattle = true
